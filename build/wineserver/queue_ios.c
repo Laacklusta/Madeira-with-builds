@@ -4422,7 +4422,42 @@ void ios_dump_stuck_waits(void)
                     fprintf( stderr, " name=" );
                     for (k = 0; k < len / sizeof(WCHAR); k++) fputc( (char)name[k], stderr );
                 }
-                fprintf( stderr, " waiters=%d state=", !list_empty( &obj->wait_queue ) );
+                /* ml687 PROBE BUG, and it produced a false root cause.
+                 *
+                 * Events and Semaphores are WRAPPERS: struct event holds a
+                 * separate `struct object *sync` (server/event.c:155), and
+                 * wait_on() queues the waiter on get_obj_sync(obj)->wait_queue,
+                 * not on the wrapper's. Reading the wrapper's queue therefore
+                 * ALWAYS shows empty, which ml686 reported as 522 objects with
+                 * "no waiters" and I read as a lost-wakeup bug.
+                 *
+                 * The Thread rows I cited as an internal control were the
+                 * artifact's own signature: threads use default_get_sync, i.e.
+                 * they ARE their own sync object, so their wrapper queue is the
+                 * sync queue and looks correctly populated. The differential I
+                 * treated as evidence was exactly what the bug predicts.
+                 *
+                 * Print BOTH queues plus the thread's active wait, so the three
+                 * states are distinguishable: sync queue populated (healthy),
+                 * sync queue empty (a real lost wakeup), or no thread->wait at
+                 * all (client/server desync). */
+                {
+                    struct object *sync = get_obj_sync( obj );
+                    fprintf( stderr, " raw_obj=%p raw_waiters=%d sync_obj=%p sync_waiters=%d thread_wait=%p state=",
+                             obj, !list_empty( &obj->wait_queue ),
+                             sync, sync ? !list_empty( &sync->wait_queue ) : -1,
+                             f.found ? (void *)f.found->wait : NULL );
+                    /* Does the thread's active wait actually reference this
+                     * object? A populated queue elsewhere proves nothing. The
+                     * comparison is against the WRAPPER because that is what
+                     * wait_on() stores in entry->obj. */
+                    {
+                        extern int ios_thread_wait_links( struct thread *, struct object * );
+                        int lk = ios_thread_wait_links( f.found, obj );
+                        fprintf( stderr, "%s", lk == 1 ? "LINKED " : (lk == 0 ? "NOT-LINKED " : "NO-WAIT ") );
+                    }
+                    if (sync) release_object( sync );
+                }
                 obj->ops->dump( obj, 1 );   /* prints its own newline */
             }
             release_object( obj );
