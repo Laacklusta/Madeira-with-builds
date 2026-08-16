@@ -7052,12 +7052,13 @@ static int ios_make_wine_logging_safe( void )
     teb = NULL;
     __asm__ volatile("mrs %0, TPIDRRO_EL0" : "=r"(tsd_base));
     tsd_base &= ~7ULL;
-    if (tsd_base) teb = *(void **)(tsd_base + 275 * 8);
+    if (tsd_base && ios_teb_tls_slot_offset)
+        teb = *(void **)(tsd_base + ios_teb_tls_slot_offset);
     if (!teb) teb = (void *)ios_teb_for_signals;
     if (!teb) return 0;
 
+    /* Republish through the key that owns the slot; never poke a raw slot. */
     if (ios_teb_tls_key_created) pthread_setspecific( ios_teb_tls_key, teb );
-    if (tsd_base) *(void **)(tsd_base + 275 * 8) = teb;
     {
         static int borrow_n;
         if (borrow_n < 8)
@@ -7530,7 +7531,8 @@ static int ios_fault_is_foreign( const void *pc, const void *addr )
     if (ios_teb_tls_key_created && pthread_getspecific( ios_teb_tls_key )) return 0;
     __asm__ volatile("mrs %0, TPIDRRO_EL0" : "=r"(tsd_base));
     tsd_base &= ~7ULL;
-    if (tsd_base && *(void **)(tsd_base + 275 * 8)) return 0;
+    if (tsd_base && ios_teb_tls_slot_offset &&
+        *(void **)(tsd_base + ios_teb_tls_slot_offset)) return 0;
 
     /* TEB-less but running emulated code (threads CEF/FEX create directly) */
     if (sz && rx && p >= rx && p < rx + sz) return 0;
@@ -8050,8 +8052,11 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
                 uintptr_t tsd_base_now;
                 __asm__ volatile("mrs %0, TPIDRRO_EL0" : "=r"(tsd_base_now));
                 tsd_base_now &= ~7ULL;
-                ERR("  [tsd275] base=%p slot275=%p teb_key_val=%p\n",
-                    (void*)tsd_base_now, *(void **)(tsd_base_now + 275 * 8),
+                extern int ios_teb_tls_slot_offset;
+                ERR("  [teb-tsd] base=%p offset=0x%x raw=%p teb_key_val=%p\n",
+                    (void*)tsd_base_now, ios_teb_tls_slot_offset,
+                    ios_teb_tls_slot_offset
+                        ? *(void **)(tsd_base_now + ios_teb_tls_slot_offset) : NULL,
                     pthread_getspecific(ios_teb_tls_key));
             }
             /* ml209: the libcef-init wall. A guest PUSH faulted writing to an address
@@ -8246,7 +8251,8 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
                     uintptr_t teb_r;
                     __asm__ volatile("mrs %0, TPIDRRO_EL0" : "=r"(tsd_r));
                     tsd_r &= ~7ULL;
-                    teb_r = (uintptr_t)*(void **)(tsd_r + 275 * 8);
+                    teb_r = ios_teb_tls_slot_offset
+                        ? (uintptr_t)*(void **)(tsd_r + ios_teb_tls_slot_offset) : 0;
 
                     /* ml558: this probe KILLED ml557.
                      *

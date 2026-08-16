@@ -3809,6 +3809,7 @@ int ios_jit_patch_x18(char *text_rw, char *text_rx, size_t text_size,
     int skipped = 0;
     int lit_skipped = 0;
     unsigned char *data_map = NULL;
+    extern int ios_teb_tls_slot_offset;
 
     /* B/BL reach guard (Steam S3 run 11 root cause): imm26 spans ±128MB.
      * The patcher used to encode out-of-range tramp offsets silently
@@ -3843,6 +3844,73 @@ int ios_jit_patch_x18(char *text_rw, char *text_rx, size_t text_size,
      * — an unpatched real instruction degrades to a recoverable runtime
      * fault, while a patched literal is fatal. Asymmetry favors skipping. */
     data_map = ios_x18_build_data_map( text_rw, text_size );
+
+    /* Pass 0: retarget hand-written TEB-from-TSD reads.
+     *
+     * FEX's Module.S contains the same three-instruction sequence this
+     * patcher emits, written by hand and assembled with a fixed slot:
+     *
+     *     mrs xN, TPIDRRO_EL0
+     *     and xN, xN, #~7
+     *     ldr xN, [xN, #<slot*8>]
+     *
+     * The slot is not knowable at assembly time -- it is whichever raw TSD
+     * slot backs our pthread key in this process -- so rewrite the immediate
+     * here, where the offset is already discovered and we are already editing
+     * .text through its RW alias before it is ever executed.
+     *
+     * The triplet is matched in full and all three registers must agree, so a
+     * stray LDR with a coincidental immediate cannot be hit. Literal-pool
+     * words are excluded via data_map for the same reason as the x18 pass. */
+    if (ios_teb_tls_slot_offset && text_size >= 12)
+    {
+        const uint32_t want_imm = (uint32_t)(ios_teb_tls_slot_offset / 8) << 10;
+        static int announced;
+        int found = 0, retargeted = 0;
+
+        /* Liveness beacon: without it, "no retarget line" is ambiguous between
+         * "the pass never ran" and "it ran and matched nothing" -- and the
+         * first cut of this probe used ERR(), which is muted in this file, so
+         * it could not report at all. */
+        if (!announced)
+        {
+            announced = 1;
+            dprintf(2, "[teb-tsd] retarget pass armed, offset=0x%x\n", ios_teb_tls_slot_offset);
+        }
+
+        for (size_t i = 0; i + 12 <= text_size; i += 4)
+        {
+            uint32_t i0, i1, i2;
+            unsigned reg;
+
+            if (data_map && (data_map[i / 4] || data_map[(i + 4) / 4] || data_map[(i + 8) / 4]))
+                continue;
+
+            i0 = *(uint32_t *)(text_rw + i);
+            if ((i0 & 0xffffffe0) != 0xd53bd060) continue;      /* mrs xN, TPIDRRO_EL0 */
+            reg = i0 & 0x1f;
+
+            i1 = *(uint32_t *)(text_rw + i + 4);
+            /* and xN, xN, #0xfffffffffffffff8 */
+            if (i1 != (0x927df000u | (reg << 5) | reg)) continue;
+
+            i2 = *(uint32_t *)(text_rw + i + 8);
+            /* ldr xN, [xN, #imm12*8] -- same register throughout */
+            if ((i2 & 0xffc003ff) != (0xf9400000u | (reg << 5) | reg)) continue;
+
+            found++;
+            if ((i2 & 0x003ffc00) == want_imm) continue;        /* already correct */
+
+            *(uint32_t *)(text_rw + i + 8) = (i2 & ~0x003ffc00u) | want_imm;
+            retargeted++;
+        }
+
+        /* Report whenever the module HAS such reads, so found>0/retargeted==0
+         * (already correct) is distinguishable from found==0 (none present). */
+        if (found)
+            dprintf(2, "[teb-tsd] .text %p: found %d static TSD read(s), retargeted %d to offset 0x%x\n",
+                    text_rx, found, retargeted, ios_teb_tls_slot_offset);
+    }
 
     for (size_t i = 0; i < text_size; i += 4)
     {

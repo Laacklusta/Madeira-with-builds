@@ -1981,6 +1981,7 @@ static void load_ntdll_functions( HMODULE module )
     void **p__wine_unix_call_dispatcher_arm64ec = NULL;
     unixlib_handle_t *p__wine_unixlib_handle;
     const IMAGE_EXPORT_DIRECTORY *exports;
+    unsigned int *pios_teb_tsd_offset;
 
     exports = get_module_data_dir( module, IMAGE_DIRECTORY_ENTRY_EXPORT, NULL );
     assert( exports );
@@ -2009,6 +2010,20 @@ static void load_ntdll_functions( HMODULE module )
     *p__wine_syscall_dispatcher = __wine_syscall_dispatcher;
     *p__wine_unixlib_handle = (UINT_PTR)unix_call_funcs;
 #ifdef WINE_IOS
+    /* Publish the discovered raw TSD slot offset so ARM64EC modules (FEX)
+     * import one authoritative value instead of hardcoding a slot. This runs
+     * after the discovery in the init path above, so the offset is already
+     * known and non-zero. */
+    {
+        extern int ios_teb_tls_slot_offset;
+        GET_FUNC( ios_teb_tsd_offset );
+        if (pios_teb_tsd_offset)
+        {
+            *pios_teb_tsd_offset = (unsigned int)ios_teb_tls_slot_offset;
+            ERR("[teb-tsd] published offset=0x%x to ntdll export at %p\n",
+                *pios_teb_tsd_offset, pios_teb_tsd_offset);
+        }
+    }
     ERR("syscall_dispatcher: p=%p *p=%p (unix func=%p)\n",
         p__wine_syscall_dispatcher, *p__wine_syscall_dispatcher, __wine_syscall_dispatcher);
     ERR("unix_call_dispatcher: p=%p *p=%p\n",
@@ -2316,6 +2331,7 @@ static int ios_load_child_ec_ntdll( PEB *child_peb )
         void **p__wine_unix_call_dispatcher;
         void **p__wine_unix_call_dispatcher_arm64ec;
         unixlib_handle_t *p__wine_unixlib_handle;
+        unsigned int *pios_teb_tsd_offset;
 
 #define EC_GET(dst, sym) \
         if (!((dst) = (void *)find_named_export( module, exports, sym ))) \
@@ -2340,6 +2356,17 @@ static int ios_load_child_ec_ntdll( PEB *child_peb )
         /* Same slot recipe as load_ntdll_functions for the session image. */
         *p__wine_syscall_dispatcher = __wine_syscall_dispatcher;
         *p__wine_unixlib_handle = (UINT_PTR)unix_call_funcs;
+        {
+            extern int ios_teb_tls_slot_offset;
+            pios_teb_tsd_offset = (unsigned int *)find_named_export( module, exports,
+                                                                     "ios_teb_tsd_offset" );
+            if (pios_teb_tsd_offset)
+            {
+                *pios_teb_tsd_offset = (unsigned int)ios_teb_tls_slot_offset;
+                dprintf(2, "[teb-tsd] ec-child published offset=0x%x\n", *pios_teb_tsd_offset);
+            }
+            else dprintf(2, "[teb-tsd] ec-child export ios_teb_tsd_offset NOT FOUND\n");
+        }
         if (p__wine_unix_call_dispatcher_arm64ec)
         {
             /* Round-7 EC unix-call swap (see load_ntdll_functions). */
@@ -2613,51 +2640,62 @@ static void start_main_thread(void)
         extern pthread_key_t ios_teb_tls_key;
         extern int ios_teb_tls_slot_offset;
         extern int ios_teb_tls_key_created;
+        uintptr_t tsd_base;
+        int slot = -1;
+
         if (!ios_teb_tls_key_created)
         {
             pthread_key_create(&ios_teb_tls_key, NULL);
             ios_teb_tls_key_created = 1;
         }
-        /* Store TEB in the slot so we can find its offset */
-        pthread_setspecific(ios_teb_tls_key, teb);
-        /* Compute raw TSD slot offset from TPIDRRO_EL0 */
-        uintptr_t tsd_base;
+
         __asm__ volatile("mrs %0, TPIDRRO_EL0" : "=r"(tsd_base));
         tsd_base &= ~7ULL;
-        /* FEX (libarm64ecfex.dll/xtajit64) hardcodes TSD slot 275 (offset 0x898).
-         * pthread_key_create may give us a different slot (e.g. 276 = 0x8a0) on
-         * iOS depending on what Apple frameworks already reserved. To make
-         * xtajit64's enter_jit / DispatchJump / etc. work, also mirror our TEB
-         * pointer into slot 275 directly. Save the prior value so we can
-         * restore on shutdown if needed (best-effort — Apple's libsystem may
-         * have used this slot, and overwriting could break that usage). */
+
+        /* Discover which raw TSD slot backs our key by writing a sentinel
+         * through pthread_setspecific and looking for it.
+         *
+         * We used to skip this and simply write the TEB into slot 275, then
+         * "discover" 275 by scanning for the TEB -- a scan that could only
+         * ever find our own graffiti. 275 is a DYNAMIC pthread key that we do
+         * not own: whoever calls pthread_key_create first gets it, and the
+         * winner varies by device and by which frameworks have loaded. On an
+         * M4 iPad the key went to something in the Metal stack brought up by
+         * the first nextDrawable, which reset the slot to NULL; every x18
+         * trampoline then loaded TEB=0 and the process died on TEB->PEB.
+         *
+         * Scanning for a sentinel rather than for the TEB matters: the TEB is
+         * already reachable through wine's own teb_key, so a TEB scan can
+         * match a slot we do not own. The sentinel is unique to this probe. */
         {
-            void **slot275 = (void **)(tsd_base + 275 * 8);
-            void *prev = *slot275;
-            *slot275 = teb;
-            dprintf(STDERR_FILENO, "[Wine init] TEB also mirrored to slot 275 (was %p, now %p)\n",
-                    prev, teb);
-        }
-        for (int s = 0; s < 512; s++)
-        {
-            if (*(void **)(tsd_base + s * 8) == teb)
+            void *const sentinel = (void *)(uintptr_t)0x5445425F534C4F54ULL; /* "TEB_SLOT" */
+            pthread_setspecific(ios_teb_tls_key, sentinel);
+            for (int s = 0; s < 512; s++)
             {
-                ios_teb_tls_slot_offset = s * 8;
-                WINE_IOS_LOG("TEB TLS slot found");
-                dprintf(STDERR_FILENO, "[Wine init] TEB at TSD slot %d (offset 0x%x) tsd_base=%p teb=%p\n",
-                        s, s * 8, (void*)tsd_base, teb);
-                /* Verify readback: simulate what the trampoline does */
-                {
-                    uintptr_t verify_base;
-                    __asm__ volatile("mrs %0, TPIDRRO_EL0" : "=r"(verify_base));
-                    verify_base &= ~7ULL;
-                    void *readback = *(void **)(verify_base + s * 8);
-                    dprintf(STDERR_FILENO, "[Wine init] TRAMPOLINE VERIFY: tpidrro_raw=%p masked=%p slot[%d]=%p expected=%p %s\n",
-                            (void*)verify_base, (void*)verify_base, s, readback, teb,
-                            readback == teb ? "OK" : "MISMATCH!");
-                }
-                break;
+                if (*(void **)(tsd_base + s * 8) == sentinel) { slot = s; break; }
             }
+            pthread_setspecific(ios_teb_tls_key, teb);
+        }
+
+        /* The slot must now hold the TEB, via the same base the trampolines
+         * will use. Anything else and we do not understand the layout. */
+        if (slot >= 0 && *(void **)(tsd_base + slot * 8) == teb)
+        {
+            ios_teb_tls_slot_offset = slot * 8;
+            WINE_IOS_LOG("TEB TLS slot found");
+            dprintf(STDERR_FILENO, "[teb-tsd] key=%d offset=0x%x verified=1 tsd_base=%p teb=%p\n",
+                    (int)ios_teb_tls_key, ios_teb_tls_slot_offset, (void *)tsd_base, teb);
+        }
+        else
+        {
+            /* Never fall back to a fixed slot. A wrong offset is not a
+             * degraded mode -- it is a guaranteed TEB=0 fault in every
+             * patched module, arbitrarily far from here. */
+            dprintf(STDERR_FILENO,
+                    "[teb-tsd] FATAL: pthread key %d has no direct raw TSD slot "
+                    "(sentinel slot=%d, tsd_base=%p, teb=%p)\n",
+                    (int)ios_teb_tls_key, slot, (void *)tsd_base, teb);
+            abort();
         }
     }
 #endif
@@ -3142,18 +3180,19 @@ DECLSPEC_EXPORT void wine_ios_child_main( int argc, char *argv[], int child_fd_s
         pthread_setspecific( ios_teb_tls_key, teb );
     }
 
-    /* Mirror the TEB into raw TSD slot 275 (offset 0x898), like start_thread
-     * and the main-thread init do. The x18 trampolines in the child's ntdll
-     * copy load the TEB from this slot; without it every patched x18 access
-     * on this thread reads TEB=0 and faults (S1 first-run storm: 60k+
-     * UNHANDLED at addr=<TEB field offset>, x17=0). The slot is zeroed
-     * again before thread exit (foreign ObjC destructor, S0 bugs 3+7). */
+    /* Confirm the TEB is visible at the discovered raw slot, which is what the
+     * x18 trampolines in the child's ntdll copy load. Without it every patched
+     * x18 access on this thread reads TEB=0 and faults (S1 first-run storm:
+     * 60k+ UNHANDLED at addr=<TEB field offset>, x17=0). */
     {
+        extern int ios_teb_tls_slot_offset;
         uintptr_t tsd_base;
+        void *raw;
         __asm__ volatile("mrs %0, TPIDRRO_EL0" : "=r"(tsd_base));
         tsd_base &= ~7ULL;
-        *(void **)(tsd_base + 275 * 8) = teb;
-        dprintf(STDERR_FILENO, "[Wine child] TEB %p mirrored to TSD slot 275\n", (void *)teb);
+        raw = ios_teb_tls_slot_offset ? *(void **)(tsd_base + ios_teb_tls_slot_offset) : NULL;
+        dprintf(STDERR_FILENO, "[teb-tsd] child raw=%p pthread=%p %s\n",
+                raw, teb, raw == teb ? "MATCH" : "MISMATCH");
     }
 
     /* Switch global peb to child's PEB for the duration of child init.

@@ -1216,13 +1216,10 @@ static DECLSPEC_NORETURN void pthread_exit_wrapper( int status )
         }
     }
     {
-        uintptr_t tsd_base;
-        __asm__ volatile("mrs %0, TPIDRRO_EL0" : "=r"(tsd_base));
-        tsd_base &= ~7ULL;
-        dprintf(2, "[tsd275] tid=%04x CLEAR at pthread_exit (was %p)\n",
-                (unsigned int)(ULONG_PTR)NtCurrentTeb()->ClientId.UniqueThread,
-                *(void **)(tsd_base + 275 * 8));
-        *(void **)(tsd_base + 275 * 8) = NULL;
+        /* Drop our own TEB reference through the key that owns the slot.
+         * We used to poke raw slot 275 here, which we never owned. */
+        extern pthread_key_t ios_teb_tls_key;
+        pthread_setspecific( ios_teb_tls_key, NULL );
         /* iOS-Mythic ml413 (#60): xtajit64 stamps TEB->Instrumentation[8]
          * (+0x16f8) while this thread holds a FEX shared lock (compile-time
          * CodeInvalidationMutex read hold). A thread exiting with the stamp
@@ -1271,28 +1268,29 @@ static void start_thread( TEB *teb )
     thread_data->syscall_trace = TRACE_ON(syscall);
     thread_data->pthread_id = pthread_self();
     pthread_setspecific( teb_key, teb );
-    /* iOS: also store TEB in the patcher's TLS slot 275 (offset 0x898 from
-     * TPIDRRO_EL0 & ~7) so the x18 trampolines (mrs TPIDRRO_EL0; ldr TEB)
-     * work on this newly-created thread. Without this, FEX/Wine worker
-     * threads (e.g. DXMT command-buffer threads, NtCreateThreadEx threads)
-     * read TEB=0 from TSD 275 and crash on the first guest x18 reference.
+    /* iOS: publish the TEB through our own pthread key so the x18
+     * trampolines (mrs TPIDRRO_EL0; ldr TEB) work on this newly-created
+     * thread. Without this, worker threads (DXMT command buffers,
+     * NtCreateThreadEx threads) read TEB=0 and fault on the first guest x18
+     * reference.
      *
-     * pthread_setspecific(ios_teb_tls_key, ...) won't help — the key may not
-     * map to slot 275. Mirror what loader_ios.c does for the main thread:
-     * write directly to slot 275 via TPIDRRO_EL0. */
+     * This used to additionally write raw TSD slot 275, a dynamic pthread key
+     * belonging to whoever created it first. Its real owner can reclaim and
+     * reset it at any time -- observed on an M4 iPad, where the slot went to
+     * NULL once the Metal stack came up and every trampoline then loaded
+     * TEB=0. Only the slot backing ios_teb_tls_key is ours to write. */
     {
         extern pthread_key_t ios_teb_tls_key;
+        extern int ios_teb_tls_slot_offset;
         uintptr_t tsd_base;
+        void *raw;
         pthread_setspecific( ios_teb_tls_key, teb );
         __asm__ volatile("mrs %0, TPIDRRO_EL0" : "=r"(tsd_base));
         tsd_base &= ~7ULL;
-        *(void **)(tsd_base + 275 * 8) = teb;
-        /* task #24: Thumper's settings threads fault with TSD[275]==NULL in
-         * the x18-free thunks despite this write. Trace the slot lifecycle:
-         * this set, the exit-time clears, and the value at SEGV time. */
-        dprintf(2, "[tsd275] tid=%04x SET teb=%p tsd_base=%p readback=%p\n",
-                (unsigned int)(ULONG_PTR)teb->ClientId.UniqueThread, (void *)teb,
-                (void *)tsd_base, *(void **)(tsd_base + 275 * 8));
+        raw = ios_teb_tls_slot_offset ? *(void **)(tsd_base + ios_teb_tls_slot_offset) : NULL;
+        dprintf(2, "[teb-tsd] thread tid=%04x raw=%p pthread=%p %s\n",
+                (unsigned int)(ULONG_PTR)teb->ClientId.UniqueThread, raw, (void *)teb,
+                raw == teb ? "MATCH" : "MISMATCH");
     }
     server_init_thread( thread_data->start, &suspend );
     signal_start_thread( thread_data->start, thread_data->param, suspend, teb );

@@ -454,15 +454,14 @@ static void *ios_child_thread_entry( void *arg )
     free( args->argv );
     free( args );
 
-    /* Zero TSD slot 275 before the implicit pthread_exit: we write the TEB
-     * there without owning the key, and a foreign Apple key with an ObjC
-     * destructor owns that slot — destructor(TEB) crashes in objc_release
-     * (S0 bugs 3+7; same guard as pthread_exit_wrapper). */
+    /* Drop our TEB reference before the implicit pthread_exit. This used to
+     * zero raw slot 275, which we squatted without owning: its real owner is
+     * a foreign Apple key whose ObjC destructor would have run on our TEB and
+     * crashed in objc_release (S0 bugs 3+7). We now only publish through our
+     * own key, whose destructor is NULL, so clearing it is all that is left. */
     {
-        uintptr_t tsd_base;
-        __asm__ volatile("mrs %0, TPIDRRO_EL0" : "=r"(tsd_base));
-        tsd_base &= ~7ULL;
-        *(void **)(tsd_base + 275 * 8) = NULL;
+        extern pthread_key_t ios_teb_tls_key;
+        pthread_setspecific( ios_teb_tls_key, NULL );
     }
     return NULL;
 }
