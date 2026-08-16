@@ -319,6 +319,95 @@ volatile unsigned long long ios_store_fault_t0 = 0;
 volatile unsigned long long ios_store_fault_ticks = 0;
 volatile unsigned long long ios_store_fault_n = 0;
 volatile unsigned long long ios_store_fault_dropped = 0;   /* ml685 */
+/* ml690: which thread is currently faulting. Set once per received exception on
+ * the single handler thread, so no locking is needed. Attribution answers the
+ * question the aggregate cannot: is the 34k faults/sec stalling the MAIN thread
+ * (in which case W^X should move the frame rate) or only the tree worker (in
+ * which case it buys a core but may not move FPS at all)? */
+volatile unsigned int ios_cur_fault_port = 0;
+
+/* ml691: pages demoted to RW by the W^X path, so an execute fault on one can be
+ * recovered. Kept OUTSIDE the store handler's static so the exec path can reach
+ * it. Restoring RX is synchronous -- the faulting thread does not resume until
+ * the page is executable again -- and a page that reaches here is marked sticky
+ * so it is never demoted a second time. */
+/* ml694: RESTORED to the ml691 structure, which is the only W^X configuration
+ * proven to work (192 demotions, 0 re-promotions, faults 45,464 -> 33,733/sec,
+ * 1-2 -> 4-5 FPS over a full session).
+ *
+ * ml692 enlarged this to a 32,768-entry hash AND dropped the threshold 32 -> 8
+ * in one build; it crashed. ml693 reverted only the threshold and crashed
+ * IDENTICALLY -- same guest RIP, same wild read, after demoting the SAME FOUR
+ * pages ml691 demoted safely. So neither "too many pages" nor "too early"
+ * explains it, and the table change is the remaining difference. Enlarging it
+ * again is off the table until execution/SMC correctness is enforced.
+ *
+ * KNOWN LIMITS of this mechanism, recorded so nobody reads it as production-safe:
+ *   - Keyed by guest page address ONLY -- no PEB, alias generation, or mapping
+ *     lifetime, so a reused address can inherit stale state.
+ *   - An NX guest page does NOT guarantee an execution fault: FEX can keep
+ *     running an already-cached host translation without ever touching the guest
+ *     page. "0 re-promotions" therefore does NOT prove no demoted page was
+ *     executed -- it only proves no fault was taken. That is the leading
+ *     explanation for ml692/ml693's deterministic wild-pointer crash.
+ *   - The durable fix is metadata owned by each live alias mapping (with
+ *     generation/lifetime) wired into FEX's translation invalidation, not a
+ *     second page-only registry. */
+#define IOS_WX_MAX 256
+struct ios_wx_page { unsigned long long page; volatile int demoted, sticky; };
+struct ios_wx_page ios_wx_pages[IOS_WX_MAX];
+static volatile unsigned ios_wx_repromotes;
+
+/* ml694: one switch, resolved once, logged once. The ml691-693 gate read two
+ * paths that can never exist (a container path with no UUID, and a CWD-relative
+ * name), so it silently forced ENABLED on every run and the "disable it and
+ * retest" A/B I offered was not actually possible. An env var reaches this
+ * native side -- proven by MYTHIC_NO_DFE in ml597/598. */
+int ios_wx_enabled( void )
+{
+    static int v = -1;
+    if (v < 0)
+    {
+        /* ml695: OFF BY DEFAULT. This optimization has known stale-translation
+         * and address-reuse hazards and has already produced deterministic
+         * crashes in two builds; silent corruption on a fresh install would be
+         * worse than a clean crash, and a kill switch a user must discover
+         * afterward is not a substitute for a safe default. Opt in with
+         * Documents/mythic-wx.txt containing 1.
+         *
+         * Native code reads ONLY this env value -- Swift owns the sandbox path
+         * so that knowledge is not duplicated in two places. */
+        const char *e = getenv( "MYTHIC_WX" );
+        v = (e && e[0] == '1') ? 1 : 0;
+        dprintf( STDERR_FILENO, "[wx] ml695 MYTHIC_WX=%s -> W^X %s (experimental, opt-in; threshold 32, %d slots)\n",
+                 e ? e : "(unset)", v ? "ENABLED" : "DISABLED", IOS_WX_MAX );
+    }
+    return v;
+}
+
+int ios_wx_repromote( unsigned long long pc )
+{
+    unsigned long long pg = pc & ~0x3fffull;
+    int i;
+    for (i = 0; i < IOS_WX_MAX; i++)
+    {
+        if (ios_wx_pages[i].page != pg || !ios_wx_pages[i].demoted) continue;
+        if (mprotect( (void *)(uintptr_t)pg, 0x4000, PROT_READ | PROT_EXEC ) == 0)
+        {
+            unsigned n = __sync_add_and_fetch( &ios_wx_repromotes, 1 );
+            ios_wx_pages[i].demoted = 0;
+            ios_wx_pages[i].sticky = 1;       /* never demote this page again */
+            dprintf(STDERR_FILENO,
+                "[wx] ml694 RE-PROMOTED 0x%llx to RX after an EXEC fault at 0x%llx "
+                "(total=%u) -- this page holds CODE, not data\n", pg, pc, n);
+            return 1;
+        }
+        dprintf(STDERR_FILENO, "[wx] ml694 re-promote mprotect FAILED 0x%llx errno=%d\n", pg, errno);
+        return 0;
+    }
+    return 0;
+}
+
 /* Last thread that took an exec fault at a PE VA (i.e. made a native call
  * through the redirect path) — the game thread in practice. The [PROF]
  * sampler in server_ios.c follows this so it profiles the presenting
@@ -1107,6 +1196,7 @@ static void *ios_mach_exception_thread( void *arg )
 
         ios_exc_request_t *req = &msg.typed;
         ios_exc_msg_count++;
+        ios_cur_fault_port = req->thread.name;              /* ml690 */
         ios_store_fault_t0 = mach_absolute_time();          /* ml680 */
 
         thread_t thread = req->thread.name;
@@ -1692,6 +1782,28 @@ static void *ios_mach_exception_thread( void *arg )
                         void *jit_pc;
                         void *fault_owner_peb = thread_teb ? ((TEB *)thread_teb)->Peb : NULL;
                         ios_last_exec_fault_thread = thread;
+
+                        /* ml691 W^X RE-PROMOTE. If a page we demoted to RW is
+                         * ever executed, restore RX here -- synchronously, before
+                         * the faulting thread resumes. This is the recovery hook
+                         * a NOEXEC fault could not otherwise provide, because FEX
+                         * normally executes its own translated host code and never
+                         * touches the guest page. Reaching this path at all means
+                         * the "data page" assumption was wrong for that page, so
+                         * it is put back and never demoted again. */
+                        {
+                            extern int ios_wx_repromote( unsigned long long );
+                            if (ios_wx_repromote( (unsigned long long)fault_pc ))
+                            {
+                                /* RX restored: mark handled and skip the
+                                 * translate/heal path below. Resuming re-runs the
+                                 * faulting instruction against the restored page. */
+                                handled = 1;
+                            }
+                        }
+                        if (!handled)
+                        {
+                        }
                         jit_pc = ios_jit_translate_addr_for_owner((void *)(uintptr_t)fault_pc,
                                                                   fault_owner_peb);
                         /* Module-mapping hit = a stale PE-VA pointer somewhere
@@ -2978,6 +3090,99 @@ static void *ios_mach_exception_thread( void *arg )
                         {
                             extern void ios_jit_anon_alias_note_write( unsigned long long );
                             ios_jit_anon_alias_note_write( (unsigned long long)fault_addr );
+
+                            /* ================ ml691 PAGE-GRANULAR W^X ==========
+                             *
+                             * ml690 attributed 98% of ~8.7M emulated stores to
+                             * ONE thread -- port 0x8d5b == wine tid 007c == the
+                             * Book of the Dead MAIN thread, which also holds
+                             * fexlock while it runs. Every one of those faults is
+                             * a Mach round trip that suspends the frame-critical
+                             * thread, serviced by a single handler running at 86%
+                             * duty. That is the largest measured cost in the app.
+                             *
+                             * WHY THIS IS SAFER THAN IT LOOKS: the ml635 comment
+                             * in this file records that this path "NEVER
+                             * invalidates FEX's cached translation". So the fault
+                             * buys no coherence TODAY -- it is pure cost. Letting
+                             * the store land directly loses nothing we currently
+                             * have.
+                             *
+                             * Mechanism: drop PROT_EXEC and add PROT_WRITE on the
+                             * guest page. FEX never executes the guest page (it
+                             * executes its own translated host code), so removing
+                             * exec is inert for normal operation -- and if
+                             * anything ever DOES execute there we take an exec
+                             * fault and can promote back, which is the re-promote
+                             * hook a NOEXEC fault could not otherwise give us.
+                             *
+                             * Demote only after a page has faulted repeatedly, so
+                             * one-off writes never change page state. Disable at
+                             * runtime with Documents/mythic-wx.txt containing 0. */
+                            {
+                                /* ml693: BACK TO 32. ml691 proved threshold 32 safe over
+                                 * 192 demotions with zero re-promotions; ml692 changed the
+                                 * table size AND dropped the threshold to 8 in one build and
+                                 * crashed the main thread early (c0000005 reading
+                                 * 0x7049f04be820, far outside the 512GB user VA). Because two
+                                 * variables moved together the run cannot say which caused it,
+                                 * so revert to the proven value and keep ONLY the table fix --
+                                 * the table was the measured limiter, the threshold was not. */
+                                /* ml694: EXACT ml691 shape -- 256-entry linear table,
+                                 * threshold 32. This is the configuration that ran a full
+                                 * session cleanly; the 32K hash is reverted, not resized. */
+                                enum { WX_SLOTS = 256, WX_THRESHOLD = 32 };
+                                static struct { unsigned long long page; unsigned n, done; } wx[WX_SLOTS];
+                                static volatile unsigned wx_demoted, wx_failed, wx_full;
+                                unsigned long long pg = (unsigned long long)fault_addr & ~0x3fffull;
+                                extern int ios_wx_enabled( void );
+                                int wi, victim = -1;
+
+                                if (ios_wx_enabled())
+                                {
+                                    for (wi = 0; wi < WX_SLOTS; wi++)
+                                    {
+                                        if (wx[wi].page == pg) break;
+                                        if (!wx[wi].page && victim < 0) victim = wi;
+                                    }
+                                    if (wi == WX_SLOTS)
+                                    {
+                                        if (victim < 0) { __sync_add_and_fetch( &wx_full, 1 ); goto wx_done; }
+                                        wi = victim; wx[wi].page = pg; wx[wi].n = 0; wx[wi].done = 0;
+                                    }
+                                    if (!wx[wi].done && ++wx[wi].n >= WX_THRESHOLD)
+                                    {
+                                        int q, sticky = 0, slot = -1;
+                                        wx[wi].done = 1;
+                                        for (q = 0; q < IOS_WX_MAX; q++)
+                                        {
+                                            if (ios_wx_pages[q].page == pg)
+                                            { sticky = ios_wx_pages[q].sticky; slot = q; break; }
+                                            if (!ios_wx_pages[q].page && slot < 0) slot = q;
+                                        }
+                                        if (sticky) goto wx_done;      /* proven to hold code */
+                                        if (mprotect( (void *)(uintptr_t)pg, 0x4000,
+                                                      PROT_READ | PROT_WRITE ) == 0)
+                                        {
+                                            unsigned d = __sync_add_and_fetch( &wx_demoted, 1 );
+                                            if (slot >= 0)
+                                            { ios_wx_pages[slot].page = pg; ios_wx_pages[slot].demoted = 1; }
+                                            if (d <= 4 || (d & 0x3f) == 0)
+                                                dprintf(STDERR_FILENO,
+                                                    "[wx] ml694 demoted=%u failed=%u table-full=%u "
+                                                    "(latest 0x%llx)\n", d, wx_failed, wx_full, pg);
+                                        }
+                                        else
+                                        {
+                                            unsigned f = __sync_add_and_fetch( &wx_failed, 1 );
+                                            if (f <= 4)
+                                                dprintf(STDERR_FILENO,
+                                                    "[wx] ml694 mprotect FAILED 0x%llx errno=%d\n", pg, errno);
+                                        }
+                                    }
+                                }
+wx_done: ;
+                            }
                         }
                         /* Advance PC past the emulated instruction */
                         __darwin_arm_thread_state64_set_pc_fptr(state,
@@ -3092,6 +3297,34 @@ static void *ios_mach_exception_thread( void *arg )
                                 fc[fi].hits++;
                                 if (fpage != fc[fi].page && fpage != fc[fi].page2)
                                 { fc[fi].page2 = fpage; fc[fi].pages_seen++; }
+
+                                /* ml690: attribute faults to the ORIGINATING thread.
+                                 * The aggregate rate cannot say whether the main
+                                 * thread is the one being stalled -- and that is
+                                 * exactly what decides whether W^X moves the frame
+                                 * rate or merely frees a core. */
+                                {
+                                    enum { FP_SLOTS = 24 };
+                                    static struct { unsigned port; unsigned long long n; } fp[FP_SLOTS];
+                                    unsigned pi;
+                                    extern volatile unsigned int ios_cur_fault_port;
+                                    for (pi = 0; pi < FP_SLOTS; pi++)
+                                    {
+                                        if (fp[pi].port == ios_cur_fault_port) { fp[pi].n++; break; }
+                                        if (!fp[pi].port) { fp[pi].port = ios_cur_fault_port; fp[pi].n = 1; break; }
+                                    }
+                                    if ((ec % 400000) == 0)
+                                    {
+                                        unsigned q;
+                                        dprintf(STDERR_FILENO, "[fault-by-thread] ml690 after %d stores:\n", ec);
+                                        for (q = 0; q < FP_SLOTS; q++)
+                                            if (fp[q].port)
+                                                dprintf(STDERR_FILENO,
+                                                    "[fault-by-thread]   port=0x%x faults=%llu (%llu%%)\n",
+                                                    fp[q].port, fp[q].n,
+                                                    (fp[q].n * 100ull) / (unsigned long long)ec);
+                                    }
+                                }
                                 if ((ec % 200000) == 0)
                                 {
                                     int k;
@@ -10950,6 +11183,465 @@ static const char *ios_pe_module_name( uint64_t base )
     return namebuf;
 }
 
+/* ============================================================================
+ * ml686 WAIT-CHAIN SNAPSHOT
+ *
+ * ml685 established that ONE Unity job worker sits at 100% CPU in a ~256-byte
+ * loop for an entire run (34 of 35 samples, run_state=1 every time), polling a
+ * word that holds its own address, while the render thread and DXMT's encoder
+ * both wait. Memory, GPU sequence lag, the fault storm and compressor thrash
+ * were each measured and eliminated as the cause of the ~1s frame gap.
+ *
+ * A spinning consumer is most likely a SYMPTOM: the interesting thread is
+ * whichever producer should be filling that queue and isn't. A list of PCs
+ * cannot show that -- an EDGE can ("render thread waits on object A, whose
+ * owner is worker B"). So capture every thread at three points spanning a
+ * frame period and record what each one is waiting ON, not just where it is.
+ *
+ * Runs from the sampler thread, never from a Mach exception handler, and never
+ * suspends anything: reads are racy-but-stable for blocked threads, which is
+ * exactly the population of interest. */
+/* ============================================================================
+ * ml688 NATIVE JIT RIP RESOLVER
+ *
+ * ml686 named the failure honestly: "callback NOT INSTALLED". The obvious move
+ * -- arm ios_fex_rip_resolved -- is a TRAP. virtual_ios.c records that pointer
+ * for DIAGNOSTICS ONLY and carries an explicit ml614 warning against arming it:
+ * BTCpu64IosRipFromHostPC is an ARM64EC **PE** export, so a native `blr` fetches
+ * its x64 entry thunk as ARM64 instructions. ml613 armed it and crashed every
+ * launch. Arming it now would simply reproduce that.
+ *
+ * So resolve the RIP natively instead. FEX appends a host-PC -> guest-RIP table
+ * to every JIT block (vl64pair entries in the block tail); this walks the same
+ * table with our own decoder, reading everything through mach_vm_read_overwrite
+ * so a corrupt header cannot fault the sampler.
+ *
+ * The decoder was validated OFFLINE against FEXCore's own Encode/Decode over
+ * 18,919 cases spanning all four encodings -- 0 mismatches -- before shipping.
+ * Returns 0 for "no answer"; *why gets the specific reason. */
+struct ios_vlpair { uint64_t arm, rip; unsigned size; };
+
+static struct ios_vlpair ios_vl64pair_decode( const uint8_t *d )
+{
+    struct ios_vlpair o;
+    if ((d[0] >> 7) == 0)                        /* vl8 */
+    {
+        o.arm = ((uint64_t)(d[0] & 0xF) + 1) << 2;
+        o.rip = (uint64_t)((d[0] >> 4) & 0x7) + 1;
+        o.size = 1;
+    }
+    else if ((d[0] >> 6) == 0x2)                 /* vl16 */
+    {
+        int64_t rip6 = (int64_t)(int8_t)((d[0] & 0x3F) << 2) >> 2;   /* sign-extend 6 */
+        o.arm = (uint64_t)(((int64_t)(int8_t)d[1]) << 2);
+        o.rip = (uint64_t)rip6;
+        o.size = 2;
+    }
+    else if (d[0] == 0xC0)                       /* vl32 */
+    {
+        int32_t a, r;
+        memcpy( &a, d + 1, 4 ); memcpy( &r, d + 5, 4 );
+        o.arm = (uint64_t)(int64_t)a; o.rip = (uint64_t)(int64_t)r; o.size = 9;
+    }
+    else                                          /* vl64 */
+    {
+        memcpy( &o.arm, d + 1, 8 ); memcpy( &o.rip, d + 9, 8 );
+        o.size = 17;
+    }
+    return o;
+}
+
+uint64_t ios_native_rip_from_hostpc( uint64_t block_begin, uint64_t host_pc, const char **why )
+{
+    uint32_t off_tail = 0;
+    struct { uint64_t size; uint64_t rip; uint64_t guest_size;
+             uint32_t n_entries; uint32_t off_entries; } tail;
+    mach_vm_size_t got = 0;
+    uint8_t tab[512];
+    uint64_t cur_host, cur_rip, tab_addr;
+    uint32_t i, pos = 0;
+
+    if (why) *why = "ok";
+    if (!block_begin) { if (why) *why = "BlockBegin==0"; return 0; }
+
+    if (mach_vm_read_overwrite( mach_task_self(), (mach_vm_address_t)block_begin,
+            sizeof(off_tail), (mach_vm_address_t)&off_tail, &got ) != KERN_SUCCESS ||
+        got != sizeof(off_tail))
+    { if (why) *why = "header unreadable"; return 0; }
+
+    if (off_tail < 4 || off_tail > (64u << 20))
+    { if (why) *why = "OffsetToBlockTail implausible"; return 0; }
+
+    if (mach_vm_read_overwrite( mach_task_self(), (mach_vm_address_t)(block_begin + off_tail),
+            sizeof(tail), (mach_vm_address_t)&tail, &got ) != KERN_SUCCESS || got != sizeof(tail))
+    { if (why) *why = "tail unreadable"; return 0; }
+
+    if (!tail.size || tail.size > (64u << 20))
+    { if (why) *why = "block Size implausible"; return 0; }
+    if (host_pc < block_begin || host_pc >= block_begin + tail.size)
+    { if (why) *why = "hostPC outside block"; return 0; }
+    if (tail.n_entries > 65536)
+    { if (why) *why = "NumberOfRIPEntries implausible"; return 0; }
+
+    tab_addr = block_begin + off_tail + tail.off_entries;
+    cur_host = block_begin;
+    cur_rip  = tail.rip;
+    if (!tail.n_entries) { if (why) *why = "no RIP entries (block entry RIP)"; return cur_rip; }
+
+    if (mach_vm_read_overwrite( mach_task_self(), (mach_vm_address_t)tab_addr,
+            sizeof(tab), (mach_vm_address_t)tab, &got ) != KERN_SUCCESS || got < 32)
+    { if (why) *why = "RIP table unreadable"; return 0; }
+
+    for (i = 0; i < tail.n_entries; i++)
+    {
+        struct ios_vlpair e;
+        if (pos + 17 > (uint32_t)got) break;      /* stay inside what we read */
+        e = ios_vl64pair_decode( tab + pos );
+        pos += e.size;
+        if (host_pc >= cur_host + e.arm) { cur_host += e.arm; cur_rip += e.rip; }
+        else break;
+    }
+    return cur_rip;
+}
+
+static const char *ios_wait_api_name( uint64_t pc, const char *sym )
+{
+    if (!sym) return "?";
+    /* the handful of primitives every Wine/Unity wait bottoms out in */
+    if (strstr(sym, "__ulock_wait"))        return "ulock_wait(futex)";
+    if (strstr(sym, "semaphore_wait"))      return "semaphore_wait";
+    if (strstr(sym, "semaphore_timedwait")) return "semaphore_timedwait";
+    if (strstr(sym, "__psynch_cvwait"))     return "cond_wait";
+    if (strstr(sym, "__psynch_mutexwait"))  return "mutex_wait";
+    if (strstr(sym, "read"))                return "read(wineserver)";
+    if (strstr(sym, "select") || strstr(sym, "poll")) return "select/poll";
+    if (strstr(sym, "mach_msg"))            return "mach_msg";
+    if (strstr(sym, "kevent"))              return "kevent";
+    return sym;
+}
+
+/* ============================================================================
+ * ml689 GUEST MODULE MAP
+ *
+ * ml688's native resolver produced real guest RIPs (0x71fbdfef51 and friends)
+ * but nothing could NAME them: the ios_jit_mappings table holds the ARM64EC PE
+ * copies FEX made, not the x64 guest modules. So the hottest guest code in the
+ * app stayed an anonymous address.
+ *
+ * Walk the guest loader list instead -- TEB->PEB->Ldr->InLoadOrderModuleList --
+ * so every guest RIP resolves to Module+RVA and can be disassembled offline
+ * against the file on the phone prefix. All reads bounded and fault-safe. */
+#define IOS_GMOD_MAX 192
+static struct { uint64_t base, size; char name[52]; } ios_gmods[IOS_GMOD_MAX];
+static int ios_gmod_count = 0;
+
+static void ios_guest_modmap_build( uint64_t teb )
+{
+    uint64_t peb = 0, ldr = 0, head, cur;
+    mach_vm_size_t g = 0;
+    int guard = 0;
+
+    if (ios_gmod_count || !teb) return;
+    if (mach_vm_read_overwrite( mach_task_self(), (mach_vm_address_t)(teb + 0x60), 8,
+                                (mach_vm_address_t)&peb, &g ) != KERN_SUCCESS || g != 8 || !peb) return;
+    if (mach_vm_read_overwrite( mach_task_self(), (mach_vm_address_t)(peb + 0x18), 8,
+                                (mach_vm_address_t)&ldr, &g ) != KERN_SUCCESS || g != 8 || !ldr) return;
+
+    head = ldr + 0x10;                       /* InLoadOrderModuleList */
+    if (mach_vm_read_overwrite( mach_task_self(), (mach_vm_address_t)head, 8,
+                                (mach_vm_address_t)&cur, &g ) != KERN_SUCCESS || g != 8) return;
+
+    while (cur && cur != head && guard++ < IOS_GMOD_MAX && ios_gmod_count < IOS_GMOD_MAX)
+    {
+        uint64_t dllbase = 0, next = 0;
+        uint32_t imgsize = 0;
+        uint16_t nlen = 0;
+        uint64_t nbuf = 0;
+
+        /* LDR_DATA_TABLE_ENTRY (x64): DllBase +0x30, SizeOfImage +0x40,
+         * BaseDllName UNICODE_STRING +0x58 (Length +0x58, Buffer +0x60) */
+        if (mach_vm_read_overwrite( mach_task_self(), (mach_vm_address_t)(cur + 0x30), 8,
+                                    (mach_vm_address_t)&dllbase, &g ) != KERN_SUCCESS || g != 8) break;
+        if (mach_vm_read_overwrite( mach_task_self(), (mach_vm_address_t)(cur + 0x40), 4,
+                                    (mach_vm_address_t)&imgsize, &g ) != KERN_SUCCESS || g != 4) break;
+        mach_vm_read_overwrite( mach_task_self(), (mach_vm_address_t)(cur + 0x58), 2,
+                                (mach_vm_address_t)&nlen, &g );
+        mach_vm_read_overwrite( mach_task_self(), (mach_vm_address_t)(cur + 0x60), 8,
+                                (mach_vm_address_t)&nbuf, &g );
+
+        if (dllbase && imgsize && imgsize < (512u << 20))
+        {
+            char nm[52]; unsigned k, n = nlen / 2;
+            memset( nm, 0, sizeof(nm) );
+            if (n > sizeof(nm) - 1) n = sizeof(nm) - 1;
+            for (k = 0; k < n && nbuf; k++)
+            {
+                uint16_t wc = 0;
+                if (mach_vm_read_overwrite( mach_task_self(), (mach_vm_address_t)(nbuf + k * 2), 2,
+                                            (mach_vm_address_t)&wc, &g ) != KERN_SUCCESS) break;
+                nm[k] = (wc < 0x80) ? (char)wc : '?';
+            }
+            ios_gmods[ios_gmod_count].base = dllbase;
+            ios_gmods[ios_gmod_count].size = imgsize;
+            memcpy( ios_gmods[ios_gmod_count].name, nm, sizeof(nm) - 1 );
+            ios_gmod_count++;
+        }
+        if (mach_vm_read_overwrite( mach_task_self(), (mach_vm_address_t)cur, 8,
+                                    (mach_vm_address_t)&next, &g ) != KERN_SUCCESS || g != 8) break;
+        cur = next;
+    }
+
+    if (ios_gmod_count)
+    {
+        int i;
+        fprintf(stderr, "[modmap] ml689 %d guest modules\n", ios_gmod_count);
+        for (i = 0; i < ios_gmod_count; i++)
+            fprintf(stderr, "[modmap]   0x%llx +0x%llx  %s\n",
+                    (unsigned long long)ios_gmods[i].base,
+                    (unsigned long long)ios_gmods[i].size, ios_gmods[i].name);
+    }
+}
+
+static const char *ios_guest_module_for( uint64_t rip, uint64_t *rva )
+{
+    int i;
+    for (i = 0; i < ios_gmod_count; i++)
+        if (rip >= ios_gmods[i].base && rip < ios_gmods[i].base + ios_gmods[i].size)
+        {
+            if (rva) *rva = rip - ios_gmods[i].base;
+            return ios_gmods[i].name;
+        }
+    if (rva) *rva = rip;
+    return NULL;
+}
+
+/* ============================================================================
+ * ml688 BOUNDED ALL-THREAD PROFILE
+ *
+ * Every FPS theory so far was chosen by picking a suspicious thread and arguing
+ * from it; each was refuted by measurement (fault storm 24% of a core, GPU lag
+ * 1-2, compressor thrash predated by the spin, buffer retention fixed with no
+ * FPS change, lost wakeups 550/550 healthy). DXMT accounts for ~10-12ms and
+ * Present is nearly free, so 900-1500ms per frame is unaccounted for.
+ *
+ * Stop selecting suspects and measure the remainder: sample EVERY thread for a
+ * bounded window, resolve JIT PCs to exact guest RIPs natively, and aggregate.
+ * Waiting threads are counted separately by wait API so "asleep" is never
+ * confused with "busy". */
+#define IOS_PROF_BUCKETS 96
+#define IOS_PROF_SAMPLES 400
+
+void ios_cpu_profile( const char *why, int ms_total )
+{
+    struct { char name[40]; uint64_t rip; uint64_t hostpc; unsigned port;
+             unsigned running; unsigned waiting; } b[IOS_PROF_BUCKETS];
+    unsigned nb = 0, iter, total_run = 0, total_wait = 0, resolved = 0, unresolved = 0;
+    const int period_us = 2000;                      /* 500 Hz */
+    int iters = ms_total * 1000 / period_us;
+    if (iters > IOS_PROF_SAMPLES) iters = IOS_PROF_SAMPLES;
+    memset( b, 0, sizeof(b) );
+
+    for (iter = 0; iter < (unsigned)iters; iter++)
+    {
+        thread_act_array_t th;
+        mach_msg_type_number_t cnt = 0, i;
+        thread_t self = mach_thread_self();
+
+        if (task_threads( mach_task_self(), &th, &cnt ) != KERN_SUCCESS) break;
+        for (i = 0; i < cnt; i++)
+        {
+            arm_thread_state64_t st;
+            mach_msg_type_number_t sc = ARM_THREAD_STATE64_COUNT;
+            struct thread_basic_info bi;
+            mach_msg_type_number_t bc = THREAD_BASIC_INFO_COUNT;
+            char tname[40] = "";
+            pthread_t pt;
+            uint64_t rip = 0, bb = 0;
+            unsigned k;
+
+            if (th[i] == self) continue;
+            if (thread_get_state( th[i], ARM_THREAD_STATE64, (thread_state_t)&st, &sc ) != KERN_SUCCESS)
+                goto next_thread;
+            memset( &bi, 0, sizeof(bi) );
+            if (thread_info( th[i], THREAD_BASIC_INFO, (thread_info_t)&bi, &bc ) != KERN_SUCCESS)
+                goto next_thread;
+
+            pt = pthread_from_mach_thread_np( th[i] );
+            if (pt) pthread_getname_np( pt, tname, sizeof(tname) );
+
+            if (st.__x[18] > 0x10000 && !(st.__x[18] & 0xfff))
+                ios_guest_modmap_build( st.__x[18] );          /* ml689: once */
+
+            if (bi.run_state != TH_STATE_RUNNING) { total_wait++; }
+            else
+            {
+                mach_vm_size_t g = 0;
+                total_run++;
+                if (st.__x[28] > 0x10000 &&
+                    mach_vm_read_overwrite( mach_task_self(), (mach_vm_address_t)st.__x[28], 8,
+                                            (mach_vm_address_t)&bb, &g ) == KERN_SUCCESS && g == 8 && bb)
+                {
+                    extern uint64_t ios_native_rip_from_hostpc( uint64_t, uint64_t, const char ** );
+                    rip = ios_native_rip_from_hostpc( bb, st.__pc, NULL );
+                    if (rip) resolved++; else unresolved++;
+                }
+            }
+
+            /* bucket by (thread name, guest RIP) so the report names a function,
+             * not just a thread */
+            /* ml690 PROFILER BUG: the key was (name, rip). Every UNNAMED native
+             * thread has name=="" and rip==0, so they all collapsed into ONE
+             * bucket -- ml689's "duty 171/400 port=0x103" was an aggregate of
+             * several threads wearing the port of whichever created the bucket,
+             * not one thread at 43%. Key by MACH PORT, which is unique. */
+            for (k = 0; k < nb; k++)
+                if (b[k].port == (unsigned)th[i] && b[k].rip == rip) break;
+            if (k == nb && nb < IOS_PROF_BUCKETS)
+            {
+                memcpy( b[nb].name, tname, sizeof(b[nb].name) - 1 );
+                b[nb].port = th[i];   /* wine poisons strncpy */
+                b[nb].name[sizeof(b[nb].name) - 1] = 0;
+                b[nb].rip = rip; b[nb].hostpc = st.__pc; b[nb].port = th[i]; nb++;
+            }
+            if (k < IOS_PROF_BUCKETS)
+            {
+                if (bi.run_state == TH_STATE_RUNNING) b[k].running++;
+                else b[k].waiting++;
+            }
+next_thread:
+            mach_port_deallocate( mach_task_self(), th[i] );
+        }
+        vm_deallocate( mach_task_self(), (vm_address_t)th, cnt * sizeof(thread_t) );
+        usleep( period_us );
+    }
+
+    fprintf(stderr, "[cpu-prof] ml688 why=%s window=%dms iters=%u  running-samples=%u waiting-samples=%u "
+                    "| guestRIP resolved=%u unresolved=%u\n",
+            why, ms_total, iter, total_run, total_wait, resolved, unresolved);
+    {   /* top buckets by RUNNING samples -- where CPU time actually went */
+        unsigned rank, shown[16], ns = 0;
+        for (rank = 0; rank < 16; rank++)
+        {
+            unsigned best = ~0u, bestv = 0, k, q; int dup;
+            for (k = 0; k < nb; k++)
+            {
+                for (dup = 0, q = 0; q < ns; q++) if (shown[q] == k) dup = 1;
+                if (dup) continue;
+                if (b[k].running > bestv) { bestv = b[k].running; best = k; }
+            }
+            if (best == ~0u || !bestv) break;
+            shown[ns++] = best;
+            {
+                uint64_t rva = 0;
+                const char *mod = b[best].rip ? ios_guest_module_for( b[best].rip, &rva ) : NULL;
+                /* ml689: percentages are shares of RUNNING SAMPLES. Also print
+                 * running/iters, which is the thread's runnable duty over the
+                 * window -- the number that converts to "about N cores". */
+                fprintf(stderr, "[cpu-prof]   %5.1f%% of running (duty %u/%u) \"%s\" port=0x%x "
+                                "guest=%s+0x%llx rip=0x%llx hostPC=0x%llx\n",
+                        total_run ? (100.0 * b[best].running / total_run) : 0.0,
+                        b[best].running, (unsigned)iter, b[best].name, b[best].port,
+                        mod ? mod : "?", (unsigned long long)rva,
+                        (unsigned long long)b[best].rip, (unsigned long long)b[best].hostpc);
+                if (rank < 3 && b[best].rip)
+                {   /* the guest x86 at the hottest sites -- disassemble offline */
+                    uint8_t gb[48]; mach_vm_size_t gg = 0;
+                    if (mach_vm_read_overwrite( mach_task_self(),
+                            (mach_vm_address_t)(b[best].rip & ~0xfULL), sizeof(gb),
+                            (mach_vm_address_t)gb, &gg ) == KERN_SUCCESS && gg == sizeof(gb))
+                    {
+                        char hx[160]; int q;
+                        for (q = 0; q < 48; q++) snprintf( hx + q * 3, 4, "%02x ", gb[q] );
+                        fprintf(stderr, "[cpu-prof]     x86 @0x%llx: %s\n",
+                                (unsigned long long)(b[best].rip & ~0xfULL), hx);
+                    }
+                }
+            }
+        }
+    }
+}
+
+void ios_wait_chain_snapshot( const char *why )
+{
+    int round;
+    for (round = 0; round < 3; round++)
+    {
+        thread_act_array_t th;
+        mach_msg_type_number_t cnt = 0, i;
+        thread_t self = mach_thread_self();
+        const int delay_ms = (round == 0) ? 0 : (round == 1 ? 100 : 900);
+
+        if (delay_ms) usleep( delay_ms * 1000 );
+        if (task_threads( mach_task_self(), &th, &cnt ) != KERN_SUCCESS) return;
+
+        fprintf(stderr, "[wait-chain] ml686 ==== round %d (t=+%dms) why=%s threads=%u ====\n",
+                round, round == 0 ? 0 : (round == 1 ? 100 : 1000), why, cnt);
+
+        for (i = 0; i < cnt; i++)
+        {
+            arm_thread_state64_t st;
+            mach_msg_type_number_t sc = ARM_THREAD_STATE64_COUNT;
+            struct thread_basic_info bi;
+            mach_msg_type_number_t bc = THREAD_BASIC_INFO_COUNT;
+            char tname[64] = "";
+            pthread_t pt;
+            Dl_info di;
+            const char *img = "?", *sym = NULL;
+            uint64_t off = 0;
+
+            if (th[i] == self) continue;
+            if (thread_get_state( th[i], ARM_THREAD_STATE64, (thread_state_t)&st, &sc ) != KERN_SUCCESS)
+                continue;
+            memset( &bi, 0, sizeof(bi) );
+            if (thread_info( th[i], THREAD_BASIC_INFO, (thread_info_t)&bi, &bc ) != KERN_SUCCESS)
+            { bi.run_state = -1; bi.cpu_usage = -1; }
+
+            pt = pthread_from_mach_thread_np( th[i] );
+            if (pt) pthread_getname_np( pt, tname, sizeof(tname) );
+
+            off = st.__pc;
+            if (dladdr( (void *)(uintptr_t)st.__pc, &di ))
+            {
+                if (di.dli_fname) { img = strrchr(di.dli_fname, '/'); img = img ? img + 1 : di.dli_fname; }
+                if (di.dli_sname) { sym = di.dli_sname; off = st.__pc - (uint64_t)(uintptr_t)di.dli_saddr; }
+            }
+
+            /* Only blocked threads carry a meaningful wait target; a RUNNING
+             * thread's x0/x1 are just whatever it is computing. */
+            if (bi.run_state == TH_STATE_RUNNING)
+            {
+                uint64_t bb = 0; mach_vm_size_t g = 0;
+                if (st.__x[28] > 0x10000)
+                    mach_vm_read_overwrite( mach_task_self(), (mach_vm_address_t)st.__x[28], 8,
+                                            (mach_vm_address_t)&bb, &g );
+                fprintf(stderr, "[wait-chain]   RUNNING  \"%s\" cpu=%d pc=%s`%s+0x%llx BlockBegin=0x%llx\n",
+                        tname, bi.cpu_usage, img, sym ? sym : "?",
+                        (unsigned long long)off, (unsigned long long)bb);
+            }
+            else
+            {
+                /* x0..x3 are the wait arguments at the syscall boundary: for
+                 * ulock_wait x1 is the address contended, for read x0 is the fd,
+                 * for semaphore_wait x0 is the port. Print the object AND a
+                 * peek at it, so an owner word is visible where one exists. */
+                uint64_t obj = st.__x[1], peek = 0; mach_vm_size_t g = 0;
+                int havepeek = (obj > 0x10000 && !(obj & 7) &&
+                                mach_vm_read_overwrite( mach_task_self(), (mach_vm_address_t)obj, 8,
+                                                        (mach_vm_address_t)&peek, &g ) == KERN_SUCCESS && g == 8);
+                fprintf(stderr, "[wait-chain]   WAIT     \"%s\" cpu=%d run=%d api=%s "
+                                "x0=0x%llx obj/x1=0x%llx%s%016llx x2=0x%llx x3=0x%llx pc=%s`%s+0x%llx\n",
+                        tname, bi.cpu_usage, bi.run_state, ios_wait_api_name( st.__pc, sym ),
+                        (unsigned long long)st.__x[0], (unsigned long long)obj,
+                        havepeek ? " val=" : " val=?", (unsigned long long)peek,
+                        (unsigned long long)st.__x[2], (unsigned long long)st.__x[3],
+                        img, sym ? sym : "?", (unsigned long long)off);
+            }
+            mach_port_deallocate( mach_task_self(), th[i] );
+        }
+        vm_deallocate( mach_task_self(), (vm_address_t)th, cnt * sizeof(thread_t) );
+    }
+}
+
 void ios_dump_all_thread_stacks(void)
 {
     thread_act_array_t threads;
@@ -11089,6 +11781,18 @@ void ios_dump_all_thread_stacks(void)
                         int k;
                         spin[slot].done = 1;
 
+                        /* ml686: the spinner is probably the victim. Capture what
+                         * EVERY thread is waiting on, at the same moment, so the
+                         * producer that should be feeding it is visible too. */
+                        {
+                            extern void ios_wait_chain_snapshot( const char * );
+                            ios_wait_chain_snapshot( "spin-detected" );
+                            {
+                                extern void ios_cpu_profile( const char *, int );
+                                ios_cpu_profile( "spin-detected", 800 );
+                            }
+                        }
+
                         fprintf(stderr, "[spin] ml677 THREAD \"%s\" port=0x%x SPINNING cpu=%d "
                                         "pc=0x%llx sp=0x%llx lr=0x%llx fp=0x%llx (hits=%u in one 4KB window)\n",
                                 tname, threads[i], bi.cpu_usage,
@@ -11128,14 +11832,35 @@ void ios_dump_all_thread_stacks(void)
                              * it while it still held ASCII), and never link the EC
                              * export directly (ml613). */
                             {
-                                extern unsigned long long (*ios_fex_rip_from_hostpc_cb)( unsigned long long, unsigned long long );
-                                extern volatile int ios_fex_rip_resolved;
-                                uint64_t exact = 0;
-                                if (ios_fex_rip_resolved && ios_fex_rip_from_hostpc_cb && ok1 && blockbegin)
-                                    exact = ios_fex_rip_from_hostpc_cb(blockbegin, st.__pc);
-                                fprintf(stderr, "[spin]   EXACT guest RIP=%s0x%llx  (State.rip=0x%llx is block-granular)\n",
-                                        exact ? "" : "UNRESOLVED:", (unsigned long long)exact,
-                                        (unsigned long long)griprip);
+                                /* ml686: ml684/685 printed a single "UNRESOLVED:0x0" for
+                                 * every failure mode, so "the callback was never pushed
+                                 * down" and "the walk ran and found nothing" looked
+                                 * identical -- a probe that cannot distinguish a missing
+                                 * mechanism from a real answer. Split every precondition
+                                 * and name the one that failed. */
+                                /* ml688: NATIVE walk. Never call the EC export
+                                 * (ml613/ml614) -- this decodes the same table. */
+                                extern uint64_t ios_native_rip_from_hostpc( uint64_t, uint64_t, const char ** );
+                                const char *why = "ok";
+                                uint64_t exact = ok1 ? ios_native_rip_from_hostpc( blockbegin, st.__pc, &why ) : 0;
+                                if (!ok1) why = "CPUState+0 unreadable (no BlockBegin)";
+                                fprintf(stderr, "[spin]   EXACT guest RIP=0x%llx why=%s\n"
+                                                "[spin]     BlockBegin=0x%llx hostPC=0x%llx delta=+0x%llx "
+                                                "State.rip=0x%llx (block-granular) resolved=%d cb=%p\n",
+                                        (unsigned long long)exact, why,
+                                        (unsigned long long)blockbegin, (unsigned long long)st.__pc,
+                                        (unsigned long long)(st.__pc - blockbegin),
+                                        (unsigned long long)griprip, 0, (void *)0);
+                                {   /* the JIT block header itself -- extent/entry live here */
+                                    uint64_t bh[6]; mach_vm_size_t bg = 0;
+                                    if (blockbegin && mach_vm_read_overwrite(mach_task_self(),
+                                            (mach_vm_address_t)blockbegin, sizeof(bh),
+                                            (mach_vm_address_t)bh, &bg) == KERN_SUCCESS && bg == sizeof(bh))
+                                        fprintf(stderr, "[spin]     block hdr: %016llx %016llx %016llx %016llx %016llx %016llx\n",
+                                                (unsigned long long)bh[0], (unsigned long long)bh[1],
+                                                (unsigned long long)bh[2], (unsigned long long)bh[3],
+                                                (unsigned long long)bh[4], (unsigned long long)bh[5]);
+                                }
                                 if (exact)
                                 {   /* the guest bytes at the real RIP name the loop */
                                     uint8_t gb[32];
@@ -11199,15 +11924,39 @@ void ios_dump_all_thread_stacks(void)
                                 if (mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)a,
                                         8, (mach_vm_address_t)&v0, &g) != KERN_SUCCESS || g != 8)
                                     continue;
-                                usleep(50000);   /* 50ms: many spin iterations */
-                                mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)a,
-                                        8, (mach_vm_address_t)&v1, &g);
-                                fprintf(stderr, "[spin]   watch x%d addr=0x%llx  t0=%016llx t1=%016llx  %s\n",
-                                        c == 0 ? 8 : (c == 1 ? 1 : (c == 2 ? 2 : 27)),
-                                        (unsigned long long)a,
-                                        (unsigned long long)v0, (unsigned long long)v1,
-                                        v0 == v1 ? "UNCHANGED over 50ms -- no progress"
-                                                 : "CHANGED -- lock is turning over");
+                                /* ml686: sample densely over a full frame period and
+                                 * report a BOUNDED SUMMARY. 50ms was too short to cover
+                                 * a ~1s frame, and one line per sample would drown the
+                                 * log; a value that changes and returns to the same
+                                 * self-pointer would also read as "unchanged" if only
+                                 * the endpoints were compared. Count transitions. */
+                                {
+                                    uint64_t prev = v0, distinct = 1, changes = 0, seen[4];
+                                    int k, ns = 1;
+                                    seen[0] = v0;
+                                    for (k = 0; k < 120; k++)   /* 120 x 10ms = 1.2s */
+                                    {
+                                        uint64_t vn = 0;
+                                        usleep(10000);
+                                        if (mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)a,
+                                                8, (mach_vm_address_t)&vn, &g) != KERN_SUCCESS || g != 8)
+                                            break;
+                                        if (vn != prev) { changes++; prev = vn; }
+                                        {
+                                            int dup = 0, q;
+                                            for (q = 0; q < ns; q++) if (seen[q] == vn) dup = 1;
+                                            if (!dup && ns < 4) { seen[ns++] = vn; distinct++; }
+                                        }
+                                        v1 = vn;
+                                    }
+                                    fprintf(stderr, "[spin]   watch addr=0x%llx over 1.2s: samples=120 "
+                                                    "transitions=%llu distinct=%llu first=%016llx last=%016llx %s\n",
+                                            (unsigned long long)a, (unsigned long long)changes,
+                                            (unsigned long long)distinct,
+                                            (unsigned long long)v0, (unsigned long long)v1,
+                                            changes ? "CHANGES -- queue does turn over"
+                                                    : "NEVER CHANGES across a full frame period");
+                                }
                                 {
                                     uint64_t nb[8];
                                     mach_vm_size_t g2 = 0;
@@ -11224,6 +11973,53 @@ void ios_dump_all_thread_stacks(void)
                                                 (unsigned long long)nb[6], (unsigned long long)nb[7]);
                                 }
                                 break;   /* one candidate is enough */
+                            }
+                        }
+
+                        /* ============ ml690 IS THE TREE CYCLIC? ==============
+                         *
+                         * The guest x86 at UnityPlayer+0x112ef.. is an ordered
+                         * walk that also REWIRES links (stores into [r10]/[r8]/
+                         * [rbx+8]) -- a deletion/rebalance, which must terminate.
+                         * One worker living there for whole runs, with the
+                         * watched word self-referential, is equally consistent
+                         * with a CYCLIC tree as with heavy work, and those have
+                         * opposite fixes: a cycle means our stores corrupted the
+                         * structure, and making the loop faster would do nothing.
+                         *
+                         * Walk the child pointer at +0x08 from every plausible
+                         * guest pointer in the host registers (the SRA mapping is
+                         * not something to guess at) and report the first repeat.
+                         * Bounded to 64 hops, all reads fault-safe. */
+                        {
+                            int ci;
+                            for (ci = 0; ci < 29; ci++)
+                            {
+                                uint64_t root = st.__x[ci], seen[64];
+                                int hops = 0, cyc = -1;
+                                if (root < 0x7000000000ULL || root >= 0x7400000000ULL || (root & 7))
+                                    continue;                     /* guest heap only */
+                                for (hops = 0; hops < 64; hops++)
+                                {
+                                    uint64_t nxt = 0; mach_vm_size_t g2 = 0; int q;
+                                    seen[hops] = root;
+                                    if (mach_vm_read_overwrite(mach_task_self(),
+                                            (mach_vm_address_t)(root + 8), 8,
+                                            (mach_vm_address_t)&nxt, &g2) != KERN_SUCCESS || g2 != 8)
+                                        break;
+                                    if (!nxt || nxt < 0x7000000000ULL || nxt >= 0x7400000000ULL) break;
+                                    for (q = 0; q <= hops; q++)
+                                        if (seen[q] == nxt) { cyc = q; break; }
+                                    if (cyc >= 0) break;
+                                    root = nxt;
+                                }
+                                if (cyc >= 0)
+                                    fprintf(stderr, "[tree] ml690 CYCLE from x%d: node 0x%llx repeats at hop %d "
+                                                    "(walked %d) -- structure is circular\n",
+                                            ci, (unsigned long long)seen[cyc], cyc, hops);
+                                else if (hops >= 8)
+                                    fprintf(stderr, "[tree] ml690 x%d chain depth %d, terminated cleanly "
+                                                    "(no cycle in %d hops)\n", ci, hops, hops);
                             }
                         }
 

@@ -1814,6 +1814,18 @@ struct ContentView: View {
                 poolSizeMB = mb
                 logStore.log("JIT pool overridden to \(mb)MB via mythic-pool.txt")
             }
+            // ml694: W^X A/B switch. Documents/mythic-wx.txt containing "0"
+            // disables page demotion for the SAME binary, so the on/off
+            // comparison needs one rebuild, not two. The previous gate read
+            // container paths that can never exist, so it silently forced
+            // ENABLED and no A/B was actually possible.
+            if let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+               let txt = try? String(contentsOf: d.appendingPathComponent("mythic-wx.txt"), encoding: .utf8) {
+                let v = txt.trimmingCharacters(in: .whitespacesAndNewlines)
+                setenv("MYTHIC_WX", v, 1)
+                logStore.log("W^X override: MYTHIC_WX=\(v) via mythic-wx.txt")
+            }
+
             winios_phase("pool-alloc-begin")
             logStore.log("Allocating \(poolSizeMB)MB JIT pool (BRK will suspend process)...")
             let t0 = CFAbsoluteTimeGetCurrent()
