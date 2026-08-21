@@ -408,6 +408,25 @@ static void *wine_process_thread(void *arg) {
         // when create_window receives it as req->parent.
         setenv("MYTHIC_WIN32U", "1", 1);
 
+        /* iOS-Mythic ml711: default FNA to its D3D11 backend.
+         *
+         * FNA3D picks OpenGL by default, and there is no GL on iOS -- our graphics stack
+         * is DXMT (D3D11 -> Metal). Marvel Cosmic Invasion loaded FNA3D.dll, immediately
+         * pulled in OPENGL32.DLL, created SDL's hidden 10x10 pixel-format probe window,
+         * and stopped there: d3d11.dll and dxgi.dll never loaded at all. FNA3D.dll ships
+         * the D3D11 backend (D3D11Driver plus the MOJOSHADER_d3d11* set are present in the
+         * shipped binary), so it only needs to be selected.
+         *
+         * This is a platform policy rather than a per-title override: FNA's GL backend
+         * cannot work through this stack for ANY title, while D3D11 routes into DXMT.
+         *
+         * overwrite=0 on purpose -- D3D11 becomes the iOS default while an explicit
+         * developer or user setting still wins. Wine copies this verbatim into the Windows
+         * environment (get_initial_environment ignores only NIXPKGS_/QT_/VK_ and the SDL
+         * audio+video driver names), and env_ios.c logs an [iOS env] INCLUDED line for it
+         * so the next log proves it arrived rather than leaving us to infer it. */
+        setenv("FNA3D_FORCE_DRIVER", "D3D11", 0);
+
         /* 2026-07-05 quiet/release mode: disables the heavyweight
          * diagnostics — the PROF sampler (thread_suspends the game thread
          * ~500x/s), per-present log lines (100+/s at RAW rates), winios
