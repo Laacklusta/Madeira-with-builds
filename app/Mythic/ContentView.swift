@@ -1826,6 +1826,42 @@ struct ContentView: View {
                 logStore.log("W^X override: MYTHIC_WX=\(v) via mythic-wx.txt")
             }
 
+            // ml716: syscall-frame context A/B. Documents/mythic-ctx-frame.txt == "1"
+            // makes ios_fill_thread_context() report a thread parked inside a syscall
+            // using its saved Wine syscall frame (TEB+0x378) instead of the Mach-O
+            // registers it happens to be executing. Off by default; native code reads
+            // only the environment variable.
+            if let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+               let txt = try? String(contentsOf: d.appendingPathComponent("mythic-ctx-frame.txt"), encoding: .utf8) {
+                let v = txt.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !v.isEmpty {
+                    setenv("MYTHIC_CTX_FRAME", v, 1)
+                    logStore.log("Context source: MYTHIC_CTX_FRAME=\(v) via mythic-ctx-frame.txt")
+                }
+            }
+
+            // ml713: Mono suspend-policy A/B. Documents/mythic-mono-suspend.txt
+            // containing "preemptive" (or "coop"/"hybrid") sets MONO_THREADS_SUSPEND
+            // for wine-mono, so the comparison needs no rebuild.
+            //
+            // EXPERIMENT, NOT A FIX, and deliberately not a default. Marvel Cosmic
+            // Invasion deadlocks with one thread owning a Mono critical section while
+            // looping on mono_lls_find/usleep waiting for a thread-info record, and six
+            // threads queued behind that section. Preemptive suspend would sidestep the
+            // handshake -- but it needs SuspendThread + GetThreadContext to yield a
+            // coherent x86-64 context for a guest thread stopped anywhere, including
+            // mid-JIT-block, and that path has never been exercised under FEX. It may
+            // trade a deadlock for a worse failure. If it does get in-game, that is NOT
+            // evidence for any particular theory of the deadlock.
+            if let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+               let txt = try? String(contentsOf: d.appendingPathComponent("mythic-mono-suspend.txt"), encoding: .utf8) {
+                let v = txt.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !v.isEmpty {
+                    setenv("MONO_THREADS_SUSPEND", v, 1)
+                    logStore.log("Mono suspend policy: MONO_THREADS_SUSPEND=\(v) via mythic-mono-suspend.txt")
+                }
+            }
+
             winios_phase("pool-alloc-begin")
             logStore.log("Allocating \(poolSizeMB)MB JIT pool (BRK will suspend process)...")
             let t0 = CFAbsoluteTimeGetCurrent()

@@ -4402,6 +4402,16 @@ void ios_dump_stuck_waits(void)
             continue;
         }
 
+        /* ml714: the server's suspend counter for this stuck thread.
+         *
+         * On iOS stop_thread() only snapshots a context and lets the target keep running,
+         * but the counter is still incremented -- and a thread with suspend>0 can neither be
+         * woken (wake_thread returns -1) nor granted a lock. A stuck thread showing suspend>0
+         * here is therefore not merely blocked, it is unwakeable, and the [srv-suspend] lines
+         * name who did it. suspend==0 on every stuck thread kills that theory outright. */
+        fprintf( stderr, "[srv-stuck]   tid=%04x suspend=%d rev=ml714\n",
+                 e->wine_tid, f.found->suspend );
+
         for (h = 0; h < e->count && h < 8; h++)
         {
             struct object *obj = get_handle_obj( f.found->process, e->handles[h], 0, NULL );

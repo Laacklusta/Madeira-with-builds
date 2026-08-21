@@ -427,6 +427,25 @@ static void *wine_process_thread(void *arg) {
          * so the next log proves it arrived rather than leaving us to infer it. */
         setenv("FNA3D_FORCE_DRIVER", "D3D11", 0);
 
+        /* ml720: make Mono report unhandled exceptions and assembly-load failures.
+         *
+         * DIAGNOSTIC — revisit before shipping; this is chatty and costs startup time.
+         *
+         * Marvel Cosmic Invasion now reaches its own managed catch block (exit code went
+         * 0 -> 1 once /gldevice: and -AllowMultiInstance cleared the two early returns in
+         * Main), so there IS a real exception -- but the game cannot tell us what it is:
+         * NLog's file target never gets written and NBug leaves no artifact, both because
+         * the failure happens before logging is usable.
+         *
+         * Mono itself will say. asm+dll masks also surface a missing or mismatched
+         * assembly, which is a common startup failure in a repack and would otherwise look
+         * like an opaque managed exception.
+         *
+         * overwrite=0 so an explicit setting still wins; MONO_ is already in env_ios.c's
+         * [iOS env] beacon list, so the next log proves whether these arrived. */
+        setenv("MONO_LOG_LEVEL", "debug", 0);
+        setenv("MONO_LOG_MASK", "asm,dll", 0);
+
         /* 2026-07-05 quiet/release mode: disables the heavyweight
          * diagnostics — the PROF sampler (thread_suspends the game thread
          * ~500x/s), per-present log lines (100+/s at RAW rates), winios
@@ -476,16 +495,26 @@ static void *wine_process_thread(void *arg) {
          * is the pure branch-feeder) or a writer-side fix. Healer stays
          * opt-in-off. */
 
-        /* Steam game vars — Thumper queries SteamAppPath dozens of times in init
-         * and uses it as base path for asset loading. Prior comment claimed
-         * setenv didn't propagate to Wine's GetEnvironmentVariableW, but reading
-         * env.c::get_initial_environment shows non-WINE/non-special vars DO
-         * pass through (line 915 fall-through). Re-trying this empirically. */
+        /* Steam game vars. One title reads SteamAppPath as its asset base path and
+         * queries it dozens of times during init, so it must be present before that
+         * title starts.
+         *
+         * KNOWN DEFECT, deliberately left in place for now: this publishes ONE title's
+         * identity to EVERY guest, with overwrite=1. A different title that links a Steam
+         * wrapper therefore sees the wrong app ID. Removing it outright was tested and is
+         * NOT the fix -- it regresses the title that needs the path, and it did not change
+         * the behaviour of the title that was mis-identified, so the mismatch is real but
+         * was not the failure being chased.
+         *
+         * The durable design belongs in the title-launch layer: publish nothing by
+         * default, take the ID from explicit title metadata or the game's own
+         * steam_appid.txt, set SteamAppPath to that game's directory, and give each child
+         * its own environment rather than mutating one process-global set shared by every
+         * pseudo-process. This path usually launches explorer.exe and cannot know which
+         * title the desktop will start later, so a conditional here cannot work. */
         setenv("SteamAppPath", "C:\\Program Files\\Thumper", 1);
-        setenv("SteamGameId", "356400", 1);  // Thumper's Steam app ID
+        setenv("SteamGameId", "356400", 1);
         setenv("SteamAppId",  "356400", 1);
-        LOG("setenv check: SteamAppPath=%{public}s SteamGameId=%{public}s",
-            getenv("SteamAppPath"), getenv("SteamGameId"));
 
         /* iOS-Mythic 2026-07-02: publish the TRUE JIT-pool RX->RW offset to
          * xtajit64.dll (its own FEXCore copy reads this via getenv in
@@ -667,6 +696,61 @@ static void *wine_process_thread(void *arg) {
                     dprintf(STDERR_FILENO, "[WineProc] Farm %s: %d links -> %s\n",
                             farms[i].farm, farmLinked, farms[i].arch);
                 }
+            }
+
+            /* ml719: REPAIR THE SHELL FOLDERS. They ship as symlinks to the BUILD
+             * MACHINE's home directory.
+             *
+             * prefix-template.tar.gz contains six absolute links --
+             *   drive_c/users/mythic/Documents -> /Users/willfaust/Documents
+             * and the same for Desktop, Downloads, Music, Pictures, Videos. That path
+             * exists on no device, so every one of them is dangling everywhere the app has
+             * ever been installed, including testers' phones. Anything resolving a Windows
+             * shell folder silently fails: Marvel Cosmic Invasion's NLog target is
+             * ${specialfolder:MyDocuments}/Tribute Games/... which is why no game log was
+             * ever produced, and it is a live candidate for why the game exits at startup
+             * (a title that cannot write its settings or save directory quitting cleanly is
+             * ordinary behaviour).
+             *
+             * Regenerating the archive is necessary but NOT sufficient: the template is
+             * extracted once, so existing prefixes keep the broken links forever. Hence
+             * this runtime migration.
+             *
+             * Deliberately conservative -- lstat so a dangling link is still seen, and only
+             * a symlink whose target is absent is touched. A real directory, or a link the
+             * user made themselves that resolves, is left completely alone. Ordinary
+             * directories rather than container-absolute symlinks: the container UUID
+             * changes across reinstalls, so an absolute link would rot the same way. */
+            {
+                static const char *shell_dirs[] = {
+                    "Documents", "Desktop", "Downloads", "Music", "Pictures", "Videos"
+                };
+                int repaired = 0, already = 0;
+                for (int i = 0; i < 6; i++) {
+                    NSString *sp = [prefix stringByAppendingPathComponent:
+                        [NSString stringWithFormat:@"drive_c/users/mythic/%s", shell_dirs[i]]];
+                    const char *cp = sp.fileSystemRepresentation;
+                    struct stat lst;
+                    if (lstat(cp, &lst) != 0) {          /* nothing there at all */
+                        if (mkdir(cp, 0755) == 0) repaired++;
+                        continue;
+                    }
+                    if (!S_ISLNK(lst.st_mode)) { already++; continue; }   /* real dir: leave */
+                    struct stat tgt;
+                    if (stat(cp, &tgt) == 0) { already++; continue; }     /* link resolves: leave */
+                    char buf[1024]; ssize_t n = readlink(cp, buf, sizeof(buf) - 1);
+                    if (n > 0) buf[n] = 0; else buf[0] = 0;
+                    if (unlink(cp) == 0 && mkdir(cp, 0755) == 0) {
+                        repaired++;
+                        dprintf(STDERR_FILENO, "[shell-dir] ml719 repaired %s (was dangling -> %s)\n",
+                                shell_dirs[i], buf);
+                    } else {
+                        dprintf(STDERR_FILENO, "[shell-dir] ml719 FAILED to repair %s (was -> %s) errno=%d\n",
+                                shell_dirs[i], buf, errno);
+                    }
+                }
+                dprintf(STDERR_FILENO, "[shell-dir] ml719 %d repaired, %d already good\n",
+                        repaired, already);
             }
 
             // Layer Microsoft's real VC++ Runtime DLLs ON TOP of the ARM64EC

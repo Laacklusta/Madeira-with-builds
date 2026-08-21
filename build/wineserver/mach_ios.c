@@ -426,6 +426,22 @@ int send_thread_signal( struct thread *thread, int sig )
 
 /* TEB / CPU-area / AMD64 CONTEXT field offsets (see winternl.h / winnt.h). */
 #define IOS_TEB_CHPE_CPUAREA_OFF   0x1788   /* TEB.ChpeV2CpuAreaInfo */
+/* ml716: ntdll_thread_data lives at TEB+GdiTebBatch (0x2f0). Field offsets are documented
+ * in wine/dlls/ntdll/unix/unix_private.h: syscall_table 0x370, syscall_frame 0x378,
+ * syscall_trace 0x380. kernel_stack follows request_fd/reply_fd/wait_fd[2]/alert_fd/
+ * allow_writes (ending 0x39c), an 8-align pad, then pthread_id 0x3a0 -> 0x3a8. That last
+ * one is derived rather than documented, so it is VALIDATED at runtime and any
+ * implausible value makes the whole substitution fall through. */
+#define IOS_TEB_SYSCALL_FRAME_OFF  0x378
+#define IOS_TEB_KERNEL_STACK_OFF   0x3a8
+/* struct syscall_frame (unix/signal_arm64.c): x[29] 000, fp 0e8, lr 0f0, sp 0f8,
+ * pc 100, cpsr 108; sizeof == 0x330. */
+#define IOS_SCF_FP    0x0e8
+#define IOS_SCF_LR    0x0f0
+#define IOS_SCF_SP    0x0f8
+#define IOS_SCF_PC    0x100
+#define IOS_SCF_CPSR  0x108
+#define IOS_SCF_SIZE  0x330
 #define IOS_CPUAREA_CTX64_OFF      0x18     /* CHPE_V2_CPU_AREA_INFO.ContextAmd64 */
 #define IOS_A64_SEGCS   0x38
 #define IOS_A64_SEGDS   0x3a
@@ -497,6 +513,76 @@ int ios_fill_thread_context( struct thread *thread,
         have_native = 1;
     }
 
+    /* ml716: A THREAD PARKED INSIDE A SYSCALL MUST REPORT ITS SYSCALL FRAME.
+     *
+     * Wine's own suspend path already does this: usr1_handler checks
+     * is_inside_syscall(SP) and, when true, builds the context from the saved syscall
+     * frame rather than from the interrupted registers. Our iOS Mach path bypassed that
+     * and converted whatever the thread was executing -- which for a thread blocked in
+     * libsystem_kernel __ulock_wait2 is ordinary Mach-O ARM64 code. The ARM64EC
+     * NtGetContextThread wrapper then ran it through context_arm_to_x64(), which maps Pc
+     * straight into Rip, handing the caller a Mach-O address as an x64 RIP with ARM ABI
+     * registers reinterpreted as x64 ones.
+     *
+     * Measured on Marvel Cosmic Invasion: every retry returned rip=0x23ddd1ae8 with
+     * is_ec=0, while Mono suspended/inspected/resumed the same thread forever holding the
+     * critical section that thread needed. The CPU-area ContextAmd64 is NOT a usable
+     * fallback -- it is initialised with flags and zero registers and never maintained as
+     * a live mirror, which is why four of five stalled threads reported rip=0.
+     *
+     * Selector mirrors is_inside_syscall() exactly: kernel_stack <= sp <= syscall_frame.
+     * NOT "native pc is not EC" -- FEX JIT code is also non-EC but its frame may be stale.
+     * RtlIsEcCode() is deliberately not called here: that is a PE-side export and this is
+     * native Unix code (ml613). The frame PC is classified later, in the EC wrapper.
+     *
+     * Opt-in via MYTHIC_CTX_FRAME=1 while it is unproven. Every validation failure falls
+     * through to the old behaviour rather than inventing state. */
+    if (have_native)
+    {
+        static int ctx_frame_env = -1;
+        if (ctx_frame_env < 0)
+        {
+            const char *e = getenv( "MYTHIC_CTX_FRAME" );
+            ctx_frame_env = (e && e[0] == '1') ? 1 : 0;
+        }
+        if (ctx_frame_env && thread->teb)
+        {
+            uint64_t frame = 0, kstack = 0;
+            uint64_t sp = native->ctl.arm64_regs.sp;
+            uint64_t mach_pc = native->ctl.arm64_regs.pc;   /* before substitution */
+            if (ios_safe_read( (uint64_t)thread->teb + IOS_TEB_SYSCALL_FRAME_OFF, &frame, 8 ) &&
+                ios_safe_read( (uint64_t)thread->teb + IOS_TEB_KERNEL_STACK_OFF, &kstack, 8 ) &&
+                frame && kstack && !(frame & 7) && kstack < frame &&
+                sp >= kstack && sp <= frame)
+            {
+                unsigned char f[IOS_SCF_SIZE];
+                if (ios_safe_read( frame, f, sizeof(f) ))
+                {
+                    uint64_t fpc = *(uint64_t *)(f + IOS_SCF_PC);
+                    uint64_t fsp = *(uint64_t *)(f + IOS_SCF_SP);
+                    if (fpc && fsp)
+                    {
+                        unsigned int i;
+                        static int n_sub;
+                        for (i = 0; i < 29; i++)
+                            native->integer.arm64_regs.x[i] = *(uint64_t *)(f + i * 8);
+                        native->integer.arm64_regs.x[29] = *(uint64_t *)(f + IOS_SCF_FP);
+                        native->integer.arm64_regs.x[30] = *(uint64_t *)(f + IOS_SCF_LR);
+                        native->ctl.arm64_regs.sp     = fsp;
+                        native->ctl.arm64_regs.pc     = fpc;
+                        native->ctl.arm64_regs.pstate = *(uint32_t *)(f + IOS_SCF_CPSR);
+                        if (n_sub++ < 48)
+                            fprintf( stderr, "[ctx-frame] ml716 #%d tid=%04x source=syscall-frame "
+                                     "mach_pc=%p sp=%p inside_syscall=1 frame=%p frame_pc=%p frame_sp=%p\n",
+                                     n_sub, thread->id, (void *)(uintptr_t)mach_pc,
+                                     (void *)(uintptr_t)sp, (void *)(uintptr_t)frame,
+                                     (void *)(uintptr_t)fpc, (void *)(uintptr_t)fsp );
+                    }
+                }
+            }
+        }
+    }
+
     /* --- guest x86-64 context from TEB->ChpeV2CpuAreaInfo->ContextAmd64 --- */
     if (wow)
     {
@@ -544,6 +630,35 @@ int ios_fill_thread_context( struct thread *thread,
             memcpy( wow->fp.x86_64_regs.fpregs, ctx + IOS_A64_FLTSAVE,
                     sizeof(wow->fp.x86_64_regs.fpregs) );
         }
+    }
+
+    /* ml715: BOTH VIEWS OF THE SAME THREAD, SIDE BY SIDE.
+     *
+     * We capture a native ARM64 context AND the guest x86-64 context out of
+     * TEB->ChpeV2CpuAreaInfo->ContextAmd64 -- but the ARM64EC NtGetContextThread wrapper
+     * always asks for the NATIVE one and runs it through context_arm_to_x64(), which maps
+     * Pc straight into Rip. For a translated thread parked in ordinary Mach-O code (e.g.
+     * libsystem_kernel __ulock_wait2) that hands the caller a "RIP" that is a Mach-O
+     * address and ARM ABI registers reinterpreted as x64 ones -- while the saved AMD64
+     * view sitting right here holds the real guest RIP.
+     *
+     * That is the suspected Marvel Cosmic Invasion window blocker: Mono suspends a thread,
+     * cannot classify the context it gets back, resumes, and retries forever while holding
+     * the critical section its target needs. Pair this with the [ec-getctx] record on the
+     * ntdll side; correlate on tid/teb + native pc, NOT on line order, because the two
+     * counters live in different modules. Log-only, capped. */
+    {
+        static int n_ctx;
+        if (n_ctx++ < 48)
+            fprintf( stderr, "[srv-getctx] ml715 #%d tid=%04x teb=%p native_pc=%p native_sp=%p | "
+                     "saved_amd64 flags=%08x rip=%p rsp=%p | have_native=%d\n",
+                     n_ctx, thread->id, (void *)(uintptr_t)thread->teb,
+                     (void *)(uintptr_t)(have_native ? native->ctl.arm64_regs.pc : 0),
+                     (void *)(uintptr_t)(have_native ? native->ctl.arm64_regs.sp : 0),
+                     wow ? wow->flags : 0,
+                     (void *)(uintptr_t)(wow ? wow->ctl.x86_64_regs.rip : 0),
+                     (void *)(uintptr_t)(wow ? wow->ctl.x86_64_regs.rsp : 0),
+                     have_native );
     }
 
     thread_resume( port );
