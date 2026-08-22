@@ -1826,6 +1826,24 @@ struct ContentView: View {
                 logStore.log("W^X override: MYTHIC_WX=\(v) via mythic-wx.txt")
             }
 
+            // ml727: wine-mono backpatcher bridge A/B. Documents/mythic-mono-bridge.txt
+            // == "1" sets MYTHIC_WINEMONO_BRIDGE, which arms FEX's Mono code-patching
+            // optimisation for wine-mono (recognised since ml712 but activation left
+            // opt-in because the bridge reclassifies an XCHG from a true atomic exchange
+            // into an alias-directed plain write).
+            //
+            // Worth arming here: the dominant fault site emits SWPAL, which is exactly
+            // what FEX generates for a guest XCHG, and the patching XCHGs sit inside
+            // libmono -- so the bridge's "RIP must lie inside Mono" test should pass.
+            if let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+               let txt = try? String(contentsOf: d.appendingPathComponent("mythic-mono-bridge.txt"), encoding: .utf8) {
+                let v = txt.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !v.isEmpty {
+                    setenv("MYTHIC_WINEMONO_BRIDGE", v, 1)
+                    logStore.log("Mono bridge: MYTHIC_WINEMONO_BRIDGE=\(v) via mythic-mono-bridge.txt")
+                }
+            }
+
             // ml716: syscall-frame context A/B. Documents/mythic-ctx-frame.txt == "1"
             // makes ios_fill_thread_context() report a thread parked inside a syscall
             // using its saved Wine syscall frame (TEB+0x378) instead of the Mach-O

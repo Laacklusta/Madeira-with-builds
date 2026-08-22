@@ -3262,9 +3262,15 @@ wx_done: ;
                          * sweep). */
                         {
                             enum { FC_SLOTS = 24 };
+                            enum { FC_PAGESET = 64, FC_SAMPLES = 12 };
                             static struct {
                                 unsigned long long pc, rip, page, page2;
                                 unsigned long long hits; unsigned pages_seen;
+                                unsigned long long lo, hi, prev, stride;
+                                unsigned restarts, nset;
+                                unsigned long long pset[FC_PAGESET];
+                                unsigned nsmp;
+                                struct { unsigned long long hits, rsp, rcx, rdx, r8, addr; } smp[FC_SAMPLES];
                             } fc[FC_SLOTS];
                             static volatile int fc_lock;
                             unsigned long long fpage = (unsigned long long)fault_addr & ~0x3fffull;
@@ -3297,6 +3303,88 @@ wx_done: ;
                                 fc[fi].hits++;
                                 if (fpage != fc[fi].page && fpage != fc[fi].page2)
                                 { fc[fi].page2 = fpage; fc[fi].pages_seen++; }
+
+                                /* ml725: IS THE DOMINANT SITE ONE BULK COPY, OR THE SAME
+                                 * COPY RESTARTING FOREVER?
+                                 *
+                                 * One site produced ~43M of ~44M emulated stores. Whether
+                                 * removing the per-store Mach fault is worth anything
+                                 * depends entirely on which of those it is: a genuine
+                                 * copy gets ~1000x faster, a retry livelock just spins
+                                 * faster and the game still never renders.
+                                 *
+                                 * Two prior readings from this very probe were wrong and
+                                 * must not be repeated. `rip` here is FEX's block-level
+                                 * State.rip, NOT the faulting instruction -- it names the
+                                 * surrounding block/call site only. And `pages_seen`
+                                 * remembers just TWO pages, so alternating over three or
+                                 * more inflates it without bound; the 7.6M it reported is
+                                 * not a cardinality. The exact guest RIP is NOT
+                                 * obtainable here: BTCpu64IosRipFromHostPC is an ARM64EC
+                                 * PE export and calling it from this native handler is
+                                 * what crashed every launch in ml613.
+                                 *
+                                 * So measure what IS available natively: the fault-address
+                                 * sequence. Ascending with a fixed stride and a
+                                 * monotonically rising span = a bulk copy. Addresses that
+                                 * jump backwards to a previous low-water mark = restarts,
+                                 * and the count says how many. A small saturating page set
+                                 * gives a cardinality that is honest about its own limit.
+                                 */
+                                if (fc[fi].hits == 1) {
+                                    fc[fi].lo = fc[fi].hi = (unsigned long long)fault_addr;
+                                    fc[fi].prev = (unsigned long long)fault_addr;
+                                    fc[fi].restarts = 0; fc[fi].stride = 0; fc[fi].nset = 0;
+                                } else {
+                                    unsigned long long a = (unsigned long long)fault_addr;
+                                    if (a < fc[fi].lo) fc[fi].lo = a;
+                                    if (a > fc[fi].hi) fc[fi].hi = a;
+                                    if (a > fc[fi].prev) {
+                                        unsigned long long d = a - fc[fi].prev;
+                                        if (d <= 64 && (!fc[fi].stride || d == fc[fi].stride))
+                                            fc[fi].stride = d;
+                                    } else if (a + 0x10000 < fc[fi].prev) {
+                                        fc[fi].restarts++;   /* big backward jump */
+                                    }
+                                    fc[fi].prev = a;
+                                }
+                                /* ml726: SAMPLE THE CALL FRAME AND ARGUMENTS.
+                                 *
+                                 * ml725's `restarts` counter cannot answer the question it
+                                 * was built for: it increments on ANY backward destination
+                                 * jump over 64KiB, so sequential memcpys to unrelated
+                                 * destinations inflate it exactly like a retry would. Its
+                                 * value must NOT be divided by hits to infer a copy length
+                                 * -- that denominator is backward jumps, not invocations.
+                                 *
+                                 * What separates "one slow copy", "the same copy retried"
+                                 * and "many legitimate copies" is the call frame and the
+                                 * arguments over time. Windows x64 puts memcpy's dst/src/len
+                                 * in RCX/RDX/R8, and FEX's SRA keeps those in x0/x1/x2 with
+                                 * RSP in x23 -- all readable here without touching FEX.
+                                 *
+                                 * A constant RSP with dst/len resetting to the same values
+                                 * is a retry. A marching dst with RSP constant is one long
+                                 * copy. Changing RSP with changing args is ordinary work
+                                 * made slow by the fault cost -- and only in that last case
+                                 * is optimising the store path the thing that reaches a
+                                 * frame. Sampled sparsely so the fault path stays cheap. */
+                                if ((fc[fi].hits % 250000ull) == 1 && fc[fi].nsmp < FC_SAMPLES) {
+                                    unsigned si2 = fc[fi].nsmp++;
+                                    fc[fi].smp[si2].hits = fc[fi].hits;
+                                    fc[fi].smp[si2].rsp  = (unsigned long long)state.__x[23];
+                                    fc[fi].smp[si2].rcx  = (unsigned long long)state.__x[0];
+                                    fc[fi].smp[si2].rdx  = (unsigned long long)state.__x[1];
+                                    fc[fi].smp[si2].r8   = (unsigned long long)state.__x[2];
+                                    fc[fi].smp[si2].addr = (unsigned long long)fault_addr;
+                                }
+
+                                {   /* saturating distinct-page set, honest about its cap */
+                                    unsigned pi; int seen = 0;
+                                    for (pi = 0; pi < fc[fi].nset; pi++)
+                                        if (fc[fi].pset[pi] == fpage) { seen = 1; break; }
+                                    if (!seen && fc[fi].nset < FC_PAGESET) fc[fi].pset[fc[fi].nset++] = fpage;
+                                }
 
                                 /* ml690: attribute faults to the ORIGINATING thread.
                                  * The aggregate rate cannot say whether the main
@@ -3331,12 +3419,30 @@ wx_done: ;
                                     dprintf(STDERR_FILENO,
                                         "[fault-class] ml678 ==== %d emulated stores so far ====\n", ec);
                                     for (k = 0; k < FC_SLOTS; k++)
-                                        if (fc[k].hits)
-                                            dprintf(STDERR_FILENO,
-                                                "[fault-class]   pc=0x%llx guestRIP=0x%llx hits=%llu "
-                                                "page=0x%llx distinct_pages>=%u\n",
+                                    {
+                                        if (!fc[k].hits) continue;
+                                        dprintf(STDERR_FILENO,
+                                                "[fault-class]   pc=0x%llx blockRIP=0x%llx hits=%llu "
+                                                "page=0x%llx pages2slot=%u | ml725 span=[0x%llx..0x%llx] "
+                                                "=%lluKB stride=%llu restarts=%u pages%s%u\n",
                                                 fc[k].pc, fc[k].rip, fc[k].hits,
-                                                fc[k].page, fc[k].pages_seen);
+                                                fc[k].page, fc[k].pages_seen,
+                                                fc[k].lo, fc[k].hi,
+                                                (fc[k].hi >= fc[k].lo) ? (fc[k].hi - fc[k].lo) / 1024 : 0,
+                                                fc[k].stride, fc[k].restarts,
+                                                (fc[k].nset >= FC_PAGESET) ? ">=" : "=", fc[k].nset);
+                                        if (fc[k].hits > 1000000ull) {
+                                            unsigned sj;
+                                            for (sj = 0; sj < fc[k].nsmp; sj++)
+                                                dprintf(STDERR_FILENO,
+                                                    "[fault-args] ml726 pc=0x%llx @%lluk rsp=0x%llx "
+                                                    "rcx/dst=0x%llx rdx/src=0x%llx r8/len=0x%llx addr=0x%llx\n",
+                                                    fc[k].pc, fc[k].smp[sj].hits / 1000ull,
+                                                    fc[k].smp[sj].rsp, fc[k].smp[sj].rcx,
+                                                    fc[k].smp[sj].rdx, fc[k].smp[sj].r8,
+                                                    fc[k].smp[sj].addr);
+                                        }
+                                    }
                                 }
                                 __sync_lock_release(&fc_lock);
                             }
@@ -11758,7 +11864,15 @@ void ios_dump_all_thread_stacks(void)
              * we can validate before trusting. */
             if (bi.cpu_usage >= 900 && bi.run_state == TH_STATE_RUNNING)
             {
-                enum { SPIN_SLOTS = 8, MIN_HITS = 4 };
+                /* ml728: MIN_HITS 4 -> 2. The spinner we are chasing was sampled only
+                 * THREE times in a ten-minute run -- always at the same pc and cpu>=993,
+                 * but never enough to satisfy a 4-hit threshold, so the snapshot that
+                 * exists precisely for this case never fired. It also alternates with
+                 * __ulock_wait2, so it is not continuously runnable and consecutive hits
+                 * cannot be relied on. Two hits in one 4KB window at cpu>=900 is still
+                 * far beyond anything a merely busy thread reaches, and the capture is
+                 * one-shot per thread. */
+                enum { SPIN_SLOTS = 8, MIN_HITS = 2 };
                 static struct { unsigned port; uint64_t page; unsigned hits; unsigned done; } spin[SPIN_SLOTS];
                 uint64_t page = st.__pc & ~0xfffull;
                 int si, slot = -1, free_slot = -1;
