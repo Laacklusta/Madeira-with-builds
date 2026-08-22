@@ -1858,6 +1858,25 @@ struct ContentView: View {
                 }
             }
 
+            // ml730: REAL thread suspension A/B. Documents/mythic-real-suspend.txt == "1"
+            // makes a Wine suspend actually stop the Mach thread and keep it stopped
+            // until the matching resume, instead of only snapshotting its registers
+            // and bumping a counter while the target keeps running.
+            //
+            // Off by default and reversible on purpose: wineserver is a thread inside
+            // this same Mach process and shares the allocator with the guest, so truly
+            // freezing a thread that holds the malloc lock or FEX's CodeInvalidationMutex
+            // can deadlock whoever suspended it. Windows apps tolerate preemptive suspend
+            // because the suspender does not share their heap; here it does.
+            if let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+               let txt = try? String(contentsOf: d.appendingPathComponent("mythic-real-suspend.txt"), encoding: .utf8) {
+                let v = txt.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !v.isEmpty {
+                    setenv("MYTHIC_REAL_SUSPEND", v, 1)
+                    logStore.log("Thread suspension: MYTHIC_REAL_SUSPEND=\(v) via mythic-real-suspend.txt")
+                }
+            }
+
             // ml713: Mono suspend-policy A/B. Documents/mythic-mono-suspend.txt
             // containing "preemptive" (or "coop"/"hybrid") sets MONO_THREADS_SUSPEND
             // for wine-mono, so the comparison needs no rebuild.

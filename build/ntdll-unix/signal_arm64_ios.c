@@ -12018,6 +12018,93 @@ void ios_dump_all_thread_stacks(void)
                                                 q * 8,
                                                 (unsigned long long)ts[q],   (unsigned long long)ts[q+1],
                                                 (unsigned long long)ts[q+2], (unsigned long long)ts[q+3]);
+
+                                    /* ======= ml729 [mono-state] NAME THE FATAL TRANSITION =======
+                                     *
+                                     * Two threads spin forever at libmono+0x2bf5d0 (`eb fe`)
+                                     * immediately after Mono logs
+                                     *   "Cannot transition thread %p from %s with DONE_BLOCKING"
+                                     * Offline disassembly of the call site settles the ABI:
+                                     *   1802bf5af  lea  r8, [rip+0xee975]   ; the format string
+                                     *   1802bf5b8  mov  edx, 4              ; level
+                                     *   1802bf5bd  call monoeg_g_log
+                                     * so %p == r9 (thread info) and %s == [rsp+0x20] (the SOURCE
+                                     * state name). Naming that state says whether the thread was
+                                     * already BLOCKING, in a self-suspend, or in a state our
+                                     * suspend machinery invented -- which is the difference
+                                     * between a Mono bug and an emulation bug.
+                                     *
+                                     * WHICH RSP? gregs[REG_RSP] is only SPILLED at block
+                                     * boundaries (same limitation that made State.rip name the
+                                     * wrong instruction in ml684), while x23 is the SRA RSP and
+                                     * is only meaningful where SRA is actually loaded. Neither
+                                     * can be trusted blind, so dump BOTH, labelled. The
+                                     * disassembly gives a free validator: whichever candidate
+                                     * has a printable C string at +0x20 is the live one. */
+                                    {
+                                        uint64_t cands[2] = { ts[8], st.__x[23] };   /* gregs[4]=RSP, SRA RSP */
+                                        const char *cname[2] = { "gregs[RSP]", "x23(SRA)" };
+                                        int ci;
+
+                                        fprintf(stderr, "[mono-state] guest args: rcx=0x%llx rdx=0x%llx "
+                                                        "r8=0x%llx r9=0x%llx  (rip=0x%llx)\n",
+                                                (unsigned long long)ts[5],  (unsigned long long)ts[6],
+                                                (unsigned long long)ts[12], (unsigned long long)ts[13],
+                                                (unsigned long long)ts[3]);
+
+                                        for (ci = 0; ci < 2; ci++)
+                                        {
+                                            uint64_t rsp = cands[ci], sv[16];
+                                            mach_vm_size_t g4 = 0;
+                                            int w;
+                                            if (rsp < 0x10000 || (rsp & 7))
+                                            {
+                                                fprintf(stderr, "[mono-state] %s=0x%llx -- implausible, skipped\n",
+                                                        cname[ci], (unsigned long long)rsp);
+                                                continue;
+                                            }
+                                            if (mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)rsp,
+                                                    sizeof(sv), (mach_vm_address_t)sv, &g4) != KERN_SUCCESS ||
+                                                g4 != sizeof(sv))
+                                            {
+                                                fprintf(stderr, "[mono-state] %s=0x%llx -- UNREADABLE\n",
+                                                        cname[ci], (unsigned long long)rsp);
+                                                continue;
+                                            }
+                                            for (w = 0; w < 16; w++)
+                                            {
+                                                char txt[65];
+                                                int printable = 0;
+                                                /* resolve the slot as a C string when it can be one --
+                                                 * this is what names the state, and it is also the
+                                                 * validator that says which RSP candidate was live */
+                                                if (sv[w] > 0x10000)
+                                                {
+                                                    mach_vm_size_t g5 = 0;
+                                                    if (mach_vm_read_overwrite(mach_task_self(),
+                                                            (mach_vm_address_t)sv[w], 64,
+                                                            (mach_vm_address_t)txt, &g5) == KERN_SUCCESS && g5 == 64)
+                                                    {
+                                                        int t;
+                                                        txt[64] = 0;
+                                                        for (t = 0; t < 64; t++)
+                                                        {
+                                                            if (txt[t] == 0) break;
+                                                            if (txt[t] < 0x20 || txt[t] > 0x7e) { t = -1; break; }
+                                                        }
+                                                        /* demand a real terminated string of >=3 chars,
+                                                         * so random pointer bytes do not read as text */
+                                                        if (t >= 3) { txt[t] = 0; printable = 1; }
+                                                    }
+                                                }
+                                                fprintf(stderr, "[mono-state] %s+0x%02x = %016llx%s%s%s\n",
+                                                        cname[ci], w * 8, (unsigned long long)sv[w],
+                                                        printable ? "  \"" : "",
+                                                        printable ? txt : "",
+                                                        printable ? "\"" : "");
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }

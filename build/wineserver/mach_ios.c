@@ -480,6 +480,138 @@ static int ios_safe_read( uint64_t addr, void *buf, unsigned int size )
     return got == size;
 }
 
+/* ================= ml730 REAL THREAD SUSPENSION (opt-in) =================
+ *
+ * Wine's suspend contract is that a suspended thread STOPS. On iOS it never
+ * has: POSIX signal suspend is dead (task #32), so stop_thread() takes a Mach
+ * snapshot and lets the target keep running while the server's counter goes
+ * up. Mono's hybrid suspend depends on the real contract -- it marks a thread
+ * STATE_BLOCKING_ASYNC_SUSPENDED once SuspendThread+GetThreadContext report
+ * success, and if that thread then keeps running and leaves its blocking
+ * region, mono_threads_transition_done_blocking() rejects the transition and
+ * g_error()s into an `eb fe` spin. That is the observed wall.
+ *
+ * PHYSICAL HOLD BOOKKEEPING is explicit, never inferred:
+ *   snapshot-only capture  : suspend -> capture -> resume            (as before)
+ *   first logical suspend  : suspend -> capture -> KEEP the hold
+ *   nested logical suspend : counter only, no second Mach suspend
+ *   final logical resume   : release exactly one Mach hold
+ * An ordinary context snapshot must never release a persistent hold.
+ *
+ * OPT-IN (MYTHIC_REAL_SUSPEND=1) and default-off: we are a single Mach process
+ * and wineserver is a thread inside it, sharing the allocator with the guest,
+ * so genuinely freezing a thread that holds the malloc lock or FEX's
+ * CodeInvalidationMutex can deadlock the suspender. Windows apps tolerate this
+ * because the suspender does not share their heap; here it does.
+ *
+ * Counters are AGGREGATE on purpose -- a per-event line would perturb exactly
+ * the timing this changes. Failures are always reported (capped). */
+int ios_real_suspend_enabled(void)
+{
+    static int env = -1;
+    if (env < 0)
+    {
+        const char *e = getenv( "MYTHIC_REAL_SUSPEND" );
+        env = (e && e[0] == '1') ? 1 : 0;
+        fprintf( stderr, "[real-susp] ml730 MYTHIC_REAL_SUSPEND=%d\n", env );
+    }
+    return env;
+}
+
+static unsigned int rs_holds, rs_releases, rs_hold_fail, rs_release_fail, rs_ops;
+
+void ios_real_suspend_stats( const char *why )
+{
+    fprintf( stderr, "[real-susp] ml730 %s: ops=%u holds=%u releases=%u "
+             "outstanding=%d hold_fail=%u release_fail=%u\n",
+             why, rs_ops, rs_holds, rs_releases,
+             (int)rs_holds - (int)rs_releases, rs_hold_fail, rs_release_fail );
+}
+
+static void rs_tick(void)
+{
+    if (++rs_ops % 128 == 0) ios_real_suspend_stats( "tick" );
+}
+
+/* ml730b: the hold flag must only ever be 0 or 1. It is a plain field in a
+ * server object that mem_alloc() poisons with 0x55, so an uninitialized one
+ * reads 0x55555555 -- which looks exactly like "already held" and silently
+ * turns every hold into a no-op while every release resumes a thread that was
+ * never suspended. That is precisely how the first ml730 run measured nothing
+ * and still reported success. Refuse to act on a value we do not recognise,
+ * and say so loudly rather than guessing. */
+static unsigned int rs_flag_bad;
+static int rs_flag_ok( struct thread *thread, const char *who )
+{
+    int v = thread->ios_mach_suspended;
+    if (v == 0 || v == 1) return 1;
+    if (rs_flag_bad++ < 16)
+        fprintf( stderr, "[real-susp] ml730b CORRUPT HOLD FLAG tid=%04x %s value=0x%x "
+                 "-- refusing to act (uninitialized?)\n", thread->id, who, (unsigned)v );
+    thread->ios_mach_suspended = 0;
+    return 0;
+}
+
+/* Apply ONE persistent Mach hold. Idempotent per thread. */
+int ios_thread_mach_hold( struct thread *thread )
+{
+    mach_msg_type_name_t type;
+    mach_port_t port;
+    kern_return_t kr;
+
+    rs_tick();
+    if (!ios_real_suspend_enabled()) return 0;
+    if (!rs_flag_ok( thread, "hold" )) return 0;
+    if (thread->ios_mach_suspended) return 1;          /* nested: counter only */
+    if (thread->unix_pid == -1 || thread->unix_tid == (unsigned int)-1) return 0;
+    if (mach_port_extract_right( mach_task_self(), thread->unix_tid,
+                                 MACH_MSG_TYPE_COPY_SEND, &port, &type ))
+        return 0;
+    kr = thread_suspend( port );
+    mach_port_deallocate( mach_task_self(), port );
+    if (kr)
+    {
+        if (rs_hold_fail++ < 16)
+            fprintf( stderr, "[real-susp] ml730 HOLD FAILED tid=%04x kr=%d\n", thread->id, kr );
+        return 0;
+    }
+    thread->ios_mach_suspended = 1;
+    rs_holds++;
+    return 1;
+}
+
+/* Release the one persistent Mach hold, if we hold it. */
+int ios_thread_mach_release( struct thread *thread )
+{
+    mach_msg_type_name_t type;
+    mach_port_t port;
+    kern_return_t kr;
+
+    rs_tick();
+    if (!rs_flag_ok( thread, "release" )) return 0;
+    if (!thread->ios_mach_suspended) return 0;
+    thread->ios_mach_suspended = 0;                    /* clear first: never double-release */
+    if (thread->unix_pid == -1 || thread->unix_tid == (unsigned int)-1) return 0;
+    if (mach_port_extract_right( mach_task_self(), thread->unix_tid,
+                                 MACH_MSG_TYPE_COPY_SEND, &port, &type ))
+        return 0;
+    kr = thread_resume( port );
+    mach_port_deallocate( mach_task_self(), port );
+    if (kr)
+    {
+        if (rs_release_fail++ < 16)
+            fprintf( stderr, "[real-susp] ml730 RELEASE FAILED tid=%04x kr=%d\n", thread->id, kr );
+        return 0;
+    }
+    rs_releases++;
+    return 1;
+}
+
+/* Set by suspend_thread() around its stop_thread() call so the capture below
+ * can convert its momentary halt into the persistent hold without ever
+ * resuming in between. Snapshot-only callers leave it NULL. */
+struct thread *ios_pending_persistent_hold;
+
 int ios_fill_thread_context( struct thread *thread,
                              struct context_data *native,
                              struct context_data *wow )
@@ -661,7 +793,24 @@ int ios_fill_thread_context( struct thread *thread,
                      have_native );
     }
 
-    thread_resume( port );
+    /* ml730: if this capture IS the first logical suspend, keep the halt we
+     * already have instead of resuming and re-suspending -- that window is
+     * exactly where the target would leave its blocking region. A snapshot-only
+     * capture (ios_pending_persistent_hold == NULL) resumes as it always did,
+     * and never releases a hold established by an earlier suspend. */
+    if (ios_pending_persistent_hold == thread && ios_real_suspend_enabled() &&
+        rs_flag_ok( thread, "capture" ) && !thread->ios_mach_suspended)
+    {
+        thread->ios_mach_suspended = 1;   /* inherit THIS thread_suspend(): do not resume */
+        rs_holds++;
+    }
+    else
+    {
+        /* Drop only the momentary halt taken at entry. If a persistent hold was
+         * established earlier its own thread_suspend() is still outstanding, so
+         * the target stays stopped -- Mach suspend counts nest. */
+        thread_resume( port );
+    }
     mach_port_deallocate( mach_task_self(), port );
 
     return have_native;
