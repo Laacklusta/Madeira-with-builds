@@ -1459,6 +1459,22 @@ struct ContentView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(.purple)
 
+                // ml731c: one-second check of the Windows clock contract
+                // (GetTickCount64 / system time / unbiased interrupt time /
+                // QueryPerformanceCounter). Verifying this by hand previously
+                // cost a five-minute game run plus a control-log comparison,
+                // and the game is too unstable to serve as a measuring tool.
+                // Each clock is checked separately so a partial failure names
+                // itself: QPC passing alone is the shared-page signature.
+                Button("x64 clock test") {
+                    setenv("MYTHIC_EXE", "clocktest-x64.exe", 1)
+                    unsetenv("MYTHIC_ARGS")
+                    unsetenv("MYTHIC_DESKTOP")
+                    runWineFullSequence()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.teal)
+
                 Button("arm64 DX11 cube") {
                     runTriangleTest()
                 }
@@ -1855,6 +1871,22 @@ struct ContentView: View {
                 if !v.isEmpty {
                     setenv("MYTHIC_CTX_FRAME", v, 1)
                     logStore.log("Context source: MYTHIC_CTX_FRAME=\(v) via mythic-ctx-frame.txt")
+                }
+            }
+
+            // ml731: Windows shared-data clock A/B. Documents/mythic-usd-time.txt == "1"
+            // makes wineserver update KUSER_SHARED_DATA's SystemTime, InterruptTime
+            // and TickCount again. Without it those stay frozen at their init values,
+            // so GetTickCount/Environment.TickCount/DateTime.UtcNow never advance and
+            // every time-gated transition in a managed game waits forever while the
+            // renderer keeps drawing. Opt-in only because the old code claimed the
+            // write faulted; this should become unconditional once proven.
+            if let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+               let txt = try? String(contentsOf: d.appendingPathComponent("mythic-usd-time.txt"), encoding: .utf8) {
+                let v = txt.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !v.isEmpty {
+                    setenv("MYTHIC_USD_TIME", v, 1)
+                    logStore.log("Shared-data clock: MYTHIC_USD_TIME=\(v) via mythic-usd-time.txt")
                 }
             }
 

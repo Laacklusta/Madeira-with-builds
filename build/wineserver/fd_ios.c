@@ -25,6 +25,9 @@
 #include <mach/mach_init.h>
 #include <mach/semaphore.h>
 #include <mach/task.h>
+#include <pthread.h>
+#include <mach/mach_vm.h>
+#include <mach/vm_region.h>
 #include "wine_log_ios.h"
 
 /* iOS-Mythic 2026-07-05: in-process request-wake semaphore. The iOS
@@ -400,6 +403,54 @@ static void atomic_store_long(volatile LONG *ptr, LONG value)
 #endif
 }
 
+/* ml731c: one place decides whether the shared-data clock is armed, so the
+ * mapping and the periodic write can never disagree about it. */
+int ios_usd_time_enabled(void)
+{
+    static int env = -1;
+    if (env < 0)
+    {
+        const char *e = getenv( "MYTHIC_USD_TIME" );
+        env = (e && e[0] == '1') ? 1 : 0;
+    }
+    return env;
+}
+
+/* Report what the writable alias actually IS right now, and prove a store to it
+ * still lands. The wedge we are chasing is an address that accepts a write at
+ * startup and later stops completing one, so protection/tag at creation time
+ * alone cannot answer it -- this runs again just before each publication.
+ * Every store here is to a scratch field we own (TickCountMultiplier is
+ * constant after init and is restored immediately), never to a live clock. */
+void ios_usd_report_alias( void *ptr, size_t size, const char *when )
+{
+    mach_vm_address_t addr = (mach_vm_address_t)ptr;
+    mach_vm_size_t    sz   = 0;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t obj = MACH_PORT_NULL;
+    volatile unsigned int *scratch = (volatile unsigned int *)((char *)ptr + 4); /* TickCountMultiplier */
+    unsigned int saved, plain_ok = 0, rel_ok = 0;
+
+    if (mach_vm_region( mach_task_self(), &addr, &sz, VM_REGION_BASIC_INFO_64,
+                        (vm_region_info_t)&info, &count, &obj ) == KERN_SUCCESS)
+        ws_log("[usd-map] ml731c %s alias=%p region=0x%llx+0x%llx prot=%d/%d shared=%d",
+               when, ptr, (unsigned long long)addr, (unsigned long long)sz,
+               info.protection, info.max_protection, info.shared);
+    else
+        ws_log("[usd-map] ml731c %s alias=%p region query FAILED", when, ptr);
+
+    /* bounded: one ordinary store, one release store, each read back once */
+    saved = *scratch;
+    *scratch = 0xA5A5A5A5u;
+    plain_ok = (*scratch == 0xA5A5A5A5u);
+    __atomic_store_n( (unsigned int *)scratch, 0x5A5A5A5Au, __ATOMIC_SEQ_CST );
+    rel_ok = (__atomic_load_n( (unsigned int *)scratch, __ATOMIC_SEQ_CST ) == 0x5A5A5A5Au);
+    *scratch = saved;
+    ws_log("[usd-map] ml731c %s store test: plain=%s release=%s (size=%zu)",
+           when, plain_ok ? "OK" : "LOST", rel_ok ? "OK" : "LOST", size);
+}
+
 static void set_user_shared_data_time(void)
 {
     timeout_t tick_count = monotonic_time / 10000;
@@ -452,9 +503,73 @@ void set_current_time(void)
     current_time = (timeout_t)now.tv_sec * TICKS_PER_SEC + now.tv_usec * 10 + ticks_1601_to_1970;
     monotonic_time = monotonic_counter();
 #ifdef WINE_IOS
-    /* iOS: tmpfile-backed shared memory mappings get invalidated by
-     * Library Validation (unsigned files rejected). Skip the write
-     * to user_shared_data to avoid Data Abort faults. */
+    /* ml731: KUSER_SHARED_DATA's clock. This write used to be skipped outright,
+     * blamed on tmpfile-backed shared mappings being invalidated by Library
+     * Validation. That reasoning does not hold up: Library Validation governs
+     * EXECUTABLE mappings, and this page is already shared successfully -- the
+     * server maps the section PROT_WRITE|MAP_SHARED and the guest remaps the
+     * same fd PROT_READ|MAP_SHARED|MAP_FIXED in virtual_map_user_shared_data().
+     *
+     * The cost of skipping it is that SystemTime, InterruptTime and TickCount
+     * are frozen at their init values for the entire run, so GetTickCount(),
+     * GetTickCount64(), Environment.TickCount and DateTime.UtcNow's fast path
+     * never advance. Native titles that pace frames with QueryPerformanceCounter
+     * (which goes to clock_gettime, not this page) never noticed; managed titles
+     * see a stopped clock, so every time-gated state transition waits forever
+     * while rendering happily continues. A game's own log showed 2,955 lines
+     * spanning 15ms of "elapsed" time across a five-minute run, while a
+     * middleware SDK's independent timer in those same lines advanced from 31s
+     * to 466s -- two clocks in one process, one of them stopped.
+     *
+     * Opt-in for now (MYTHIC_USD_TIME=1) only because the old comment claimed a
+     * fault; a functioning clock should not stay experimental once proven. */
+    /* ml731f: the periodic path is now NOTHING but the seven stores.
+     *
+     * Every logging call has been removed from it. ws_log() does file I/O and
+     * the report used fprintf(), and set_current_time() runs on the server's
+     * main loop AND inside request handling -- so those were logging from the
+     * exact path being measured. Three separate hangs were investigated with
+     * that instrumentation still live in the path, which makes the probe a
+     * suspect in every result it produced. Creation-time reporting is kept
+     * (it runs once, before any client exists); steady state is silent.
+     *
+     * Only TickCount and InterruptTime are published: clocktest measured that
+     * SystemTime and QueryPerformanceCounter already advance without this page. */
+    if (ios_usd_time_enabled() && user_shared_data)
+    {
+        /* ml732: publish on every call, as upstream does. The previous build
+         * throttled this to 16ms on the theory that repeated stores meant
+         * repeated tmpfile writeback. That was wrong twice over: repeated stores
+         * keep ONE 4KB page dirty rather than forcing a filesystem operation
+         * each time, and user_shared_data_timeout is the poll timeout in
+         * get_next_timeout(), not a write throttle -- upstream deliberately
+         * publishes after every event-loop wake. Throttling changed nothing and
+         * only added a variable. */
+        timeout_t tc = monotonic_time / 10000;
+
+        /* SystemTime is published too. GetSystemTimeAsFileTime() does not read
+         * this page on iOS -- it goes to clock_gettime, which is why clocktest
+         * saw it advance even while the page was frozen -- but anything reading
+         * KUSER_SHARED_DATA.SystemTime directly would still see a stopped clock,
+         * and that is not something the four public APIs can prove either way.
+         * These are three more plain atomic stores.
+         *
+         * TimeZoneBias is deliberately NOT published: computing it needs
+         * gmtime/localtime/mktime, which take libc's timezone lock and share a
+         * static buffer in a process where wineserver and every guest thread
+         * share libc. It keeps its initialization value (UTC). */
+        atomic_store_long(&user_shared_data->SystemTime.High2Time, current_time >> 32);
+        atomic_store_ulong(&user_shared_data->SystemTime.LowPart, current_time);
+        atomic_store_long(&user_shared_data->SystemTime.High1Time, current_time >> 32);
+        atomic_store_long(&user_shared_data->InterruptTime.High2Time, monotonic_time >> 32);
+        atomic_store_ulong(&user_shared_data->InterruptTime.LowPart, monotonic_time);
+        atomic_store_long(&user_shared_data->InterruptTime.High1Time, monotonic_time >> 32);
+
+        atomic_store_long(&user_shared_data->TickCount.High2Time, tc >> 32);
+        atomic_store_ulong(&user_shared_data->TickCount.LowPart, tc);
+        atomic_store_long(&user_shared_data->TickCount.High1Time, tc >> 32);
+        atomic_store_ulong(&user_shared_data->TickCountLowDeprecated, tc);
+    }
 #else
     if (user_shared_data) set_user_shared_data_time();
 #endif

@@ -1538,7 +1538,58 @@ struct object *create_user_data_mapping( struct object *root, const struct unico
 
     if (!(mapping = create_mapping( root, name, attr, sizeof(KUSER_SHARED_DATA),
                                     SEC_COMMIT, 0, FILE_READ_DATA | FILE_WRITE_DATA, sd ))) return NULL;
+#ifdef WINE_IOS
+    /* ml731c: EVERYTHING here is behind MYTHIC_USD_TIME. The previous attempt put
+     * only the risky write behind the switch and left the mapping change beside
+     * it ungated, so "flag off" was not the old build and there was no clean
+     * baseline to compare against. A kill switch that does not restore the prior
+     * behaviour exactly is not a kill switch. */
+    if (!ios_usd_time_enabled())
+    {
+        ptr = mmap( NULL, mapping->size, PROT_WRITE, MAP_SHARED, get_unix_fd( mapping->fd ), 0 );
+        if (ptr != MAP_FAILED) user_shared_data = ptr;
+        return &mapping->obj;
+    }
+
+    /* The writable alias must not live inside a band the guest allocator owns.
+     * With a NULL hint the kernel handed us 0x7038000000 -- exactly the lower
+     * bound of the guest VA scan window -- and the store into it later wedged
+     * forever at one instruction after an initial write had already succeeded.
+     * An address that starts writable and stops being writable is what a
+     * reclaimed or reprotected range looks like, so keep the alias out of that
+     * range and say where it landed. */
+    {
+        static const uintptr_t GUEST_LO = 0x7038000000ull;   /* FEX guest window base */
+        static const uintptr_t GUEST_HI = 0x8000000000ull;   /* PA pools + FEX arena above it */
+        const uintptr_t hints[] = { 0, 0x200000000ull, 0x300000000ull, 0x400000000ull };
+        unsigned h;
+
+        ptr = MAP_FAILED;
+        for (h = 0; h < sizeof(hints)/sizeof(hints[0]); h++)
+        {
+            void *want = (void *)hints[h];
+            void *got = mmap( want, mapping->size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                              get_unix_fd( mapping->fd ), 0 );
+            if (got == MAP_FAILED) continue;
+            if ((uintptr_t)got < GUEST_LO || (uintptr_t)got >= GUEST_HI) { ptr = got; break; }
+            ws_log("[usd-map] ml731c alias landed at %p inside the guest band, retrying", got);
+            munmap( got, mapping->size );
+        }
+        if (ptr == MAP_FAILED)
+        {
+            ws_log("[usd-map] ml731c NO alias outside the guest band -- leaving time frozen");
+            return &mapping->obj;
+        }
+        /* iOS quirk set_session_mapping() already guards: mmap(PROT_WRITE,
+         * MAP_SHARED) on a file fd can silently yield read-only pages. */
+        if (mprotect( ptr, mapping->size, PROT_READ | PROT_WRITE ) == -1)
+            ws_log("[usd-map] ml731c mprotect RW failed errno=%d", errno);
+
+        ios_usd_report_alias( ptr, mapping->size, "create" );
+    }
+#else
     ptr = mmap( NULL, mapping->size, PROT_WRITE, MAP_SHARED, get_unix_fd( mapping->fd ), 0 );
+#endif
     if (ptr != MAP_FAILED) user_shared_data = ptr;
     return &mapping->obj;
 }

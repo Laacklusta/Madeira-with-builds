@@ -191,6 +191,19 @@ COLLISIONS=(
     # Rename wineserver-side to ws_shared_session so each side has its
     # own pointer to its own mapping of the same backing file.
     shared_session
+    # user_shared_data: the same defect as shared_session, one layer over.
+    # wineserver defines it as a common global and ntdll-unix defines it as
+    # initialized data; the single-process link merges them. wineserver's
+    # create_user_data_mapping() sets it to a writable alias, then the guest's
+    # ntdll init runs virtual_ios.c's `user_shared_data = NULL;
+    # NtAllocateVirtualMemory(..., PAGE_READONLY)` over the SAME variable, so
+    # the server's pointer starts aiming at the guest's read-only page in the
+    # FEX guest band. Unlike shared_session this does not fail silently: the
+    # server's next store faults on a PROT_READ page and the main loop wedges
+    # forever, which is why the shared clock could never be published and why
+    # every process hung in server_init_process() the moment a client
+    # connected -- guest ntdll init is exactly when the pointer was stolen.
+    user_shared_data
 )
 RENAME_ARGS=()
 for s in "${COLLISIONS[@]}"; do
