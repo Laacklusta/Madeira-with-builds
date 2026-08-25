@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 #include <mach/mach_time.h>
 #include <unistd.h>
 #include <AudioToolbox/AudioToolbox.h>
@@ -58,6 +59,8 @@ typedef int EDataFlow;
 
 #define STATUS_SUCCESS 0
 #define S_OK 0
+#define E_OUTOFMEMORY ((HRESULT)0x8007000EL)
+#define AUDCLNT_E_NOT_INITIALIZED ((HRESULT)0x88890001L)
 #define S_FALSE 1
 #define E_FAIL 0x80004005L
 #define AUDCLNT_E_NOT_INITIALIZED 0x88890001L
@@ -113,6 +116,7 @@ struct create_stream_params {
 };
 
 struct stream_handle_params { stream_handle stream; HRESULT result; };
+struct timer_loop_params { stream_handle stream; };
 struct stream_handle_only { stream_handle stream; };
 
 struct release_stream_params {
@@ -290,7 +294,86 @@ struct ios_stream {
     _Atomic uint64_t play_pos;   /* frames consumed by the RT callback */
 };
 
-static struct ios_stream g_stream;
+/* ml739: one stream object per client, mirroring Wine's CoreAudio driver.
+ *
+ * This was a documented singleton -- see the comment on struct ios_stream --
+ * and ordinary WASAPI use breaks it: a title that plays a cutscene opens a
+ * second concurrent render client (48k/2ch float32) while its main audio
+ * client (48k/2ch PCM16) is still live. Both were handed the SAME handle, so
+ * creating the second tore down the first's AudioUnit, set_event_handle
+ * overwrote the first client's event -- after which it was never signalled
+ * again -- and both shared one ring, one padding counter and one play
+ * position, with two audio_client_timer threads driving them. The audible
+ * result was a silent cutscene; the functional result was a source queue that
+ * never drained, so the video never reported completion.
+ *
+ * The registry exists only for handle validation and process-detach cleanup.
+ * It is never touched from the RemoteIO callback, which reaches its stream
+ * through inputProcRefCon. */
+#define IOS_MAX_STREAMS 16
+static struct ios_stream *g_streams[IOS_MAX_STREAMS];
+static pthread_mutex_t g_streams_lock;   /* ml739: init at process_attach */
+
+static struct ios_stream *stream_from_handle(stream_handle h)
+{
+    struct ios_stream *s = (struct ios_stream *)(uintptr_t)h;
+    int i, ok = 0;
+    if (!s) return NULL;
+    pthread_mutex_lock(&g_streams_lock);
+    for (i = 0; i < IOS_MAX_STREAMS; i++) if (g_streams[i] == s) { ok = 1; break; }
+    pthread_mutex_unlock(&g_streams_lock);
+    if (!ok) {
+        static int moaned;
+        if (moaned++ < 8)
+            fprintf(stderr, "[ios-astream] ml739 STALE handle %p -- ignoring\n", (void *)s);
+        return NULL;
+    }
+    return s;
+}
+
+static int stream_register(struct ios_stream *s)
+{
+    int i, n = 0;
+    pthread_mutex_lock(&g_streams_lock);
+    for (i = 0; i < IOS_MAX_STREAMS; i++) if (g_streams[i]) n++;
+    for (i = 0; i < IOS_MAX_STREAMS; i++) if (!g_streams[i]) { g_streams[i] = s; break; }
+    pthread_mutex_unlock(&g_streams_lock);
+    if (i == IOS_MAX_STREAMS) return -1;
+    fprintf(stderr, "[ios-astream] ml739 CREATE stream=%p (%d now live)\n", (void *)s, n + 1);
+    return 0;
+}
+
+static void stream_unregister(struct ios_stream *s)
+{
+    int i, n = 0;
+    pthread_mutex_lock(&g_streams_lock);
+    for (i = 0; i < IOS_MAX_STREAMS; i++) if (g_streams[i] == s) g_streams[i] = NULL;
+    for (i = 0; i < IOS_MAX_STREAMS; i++) if (g_streams[i]) n++;
+    pthread_mutex_unlock(&g_streams_lock);
+    fprintf(stderr, "[ios-astream] ml739 RELEASE stream=%p (%d still live)\n", (void *)s, n);
+}
+
+/* ml738: this driver is a documented singleton -- see the comment on
+ * struct ios_stream. One title opens TWO concurrent render streams with
+ * different formats (48k/2ch PCM16, then 48k/2ch float32), which is exactly
+ * the case the comment says needs a table. Every client is handed the SAME
+ * handle (&g_stream), so the driver cannot tell them apart: creating the
+ * second tears down the first's AudioUnit, set_event_handle overwrites the
+ * first client's event, releasing either invalidates both, and they share one
+ * ring, one padding counter and one playback position.
+ *
+ * Instrument before changing behaviour: generation, the handle handed out, the
+ * event handle and the calling thread, so the interleaving is visible rather
+ * than inferred. */
+static unsigned long long ios_current_tid(void)
+{
+    uint64_t t = 0;
+    pthread_threadid_np(NULL, &t);
+    return (unsigned long long)t;
+}
+
+static unsigned int g_stream_gen;
+static unsigned int g_live_streams;
 static mach_timebase_info_data_t g_timebase;
 
 /* NtSetEvent lives in the same statically-linked unix ntdll. timer_loop
@@ -441,16 +524,34 @@ static void ios_audio_teardown_unit(struct ios_stream *s) {
 static NTSTATUS ios_process_attach(void *args) {
     LOG_FN_CALL(0, "process_attach");
     (void)args;
-    memset(&g_stream, 0, sizeof(g_stream));
+    pthread_mutex_init(&g_streams_lock, NULL);
     if (!g_timebase.denom) mach_timebase_info(&g_timebase);
     return STATUS_SUCCESS;
 }
 
 static NTSTATUS ios_process_detach(void *args) {
     (void)args;
-    if (g_stream.render_scratch) {
-        free(g_stream.render_scratch);
-        g_stream.render_scratch = NULL;
+    /* ml739: tear down whatever is still registered. Previously this freed the
+     * singleton's scratch buffer only; with a stream per client anything still
+     * live at process detach has to be disposed individually. */
+    {
+        int i;
+        for (i = 0; i < IOS_MAX_STREAMS; i++) {
+            struct ios_stream *s;
+            pthread_mutex_lock(&g_streams_lock);
+            s = g_streams[i];
+            g_streams[i] = NULL;
+            pthread_mutex_unlock(&g_streams_lock);
+            if (!s) continue;
+            /* Stop the hardware, but do NOT free. release_stream joins a
+             * stream's own timer thread before freeing it; here we have no
+             * handle to join, and freeing while that thread may still be
+             * looping is a use-after-free. The process is going away, so
+             * leaving the memory is the safe trade. */
+            s->valid = 0;
+            s->started = 0;
+            ios_audio_teardown_unit(s);
+        }
     }
     return STATUS_SUCCESS;
 }
@@ -509,45 +610,74 @@ static NTSTATUS ios_create_stream(void *args) {
     LOG_FN_CALL(4, "create_stream");
     struct create_stream_params *p = args;
     uint64_t dur_frames;
-    /* Allocate or reuse the singleton stream. */
-    ios_audio_teardown_unit(&g_stream);
-    g_stream.valid = 1;
-    g_stream.started = 0;
-    g_stream.start_mach = 0;
-    g_stream.accumulated_frames = 0;
-    g_stream.sample_rate = p->fmt && p->fmt->nSamplesPerSec ? p->fmt->nSamplesPerSec : IOS_AUDIO_SAMPLE_RATE;
-    g_stream.channels = p->fmt && p->fmt->nChannels ? p->fmt->nChannels : IOS_AUDIO_CHANNELS;
-    g_stream.frame_bytes = p->fmt && p->fmt->nBlockAlign ? p->fmt->nBlockAlign
-                          : (g_stream.channels * IOS_AUDIO_BITS) / 8;
+    /* ml739: a stream per client. */
+    struct ios_stream *s = calloc(1, sizeof(*s));
+    if (!s) { p->result = E_OUTOFMEMORY; return STATUS_SUCCESS; }
+    s->valid = 1;
+    s->started = 0;
+    s->start_mach = 0;
+    s->accumulated_frames = 0;
+    s->sample_rate = p->fmt && p->fmt->nSamplesPerSec ? p->fmt->nSamplesPerSec : IOS_AUDIO_SAMPLE_RATE;
+    s->channels = p->fmt && p->fmt->nChannels ? p->fmt->nChannels : IOS_AUDIO_CHANNELS;
+    s->frame_bytes = p->fmt && p->fmt->nBlockAlign ? p->fmt->nBlockAlign
+                          : (s->channels * IOS_AUDIO_BITS) / 8;
     /* Ring capacity: the requested buffer duration (100ns units), floor
      * 100ms so a slow FEX-translated mixer has slack. */
-    dur_frames = (uint64_t)(p->duration > 0 ? p->duration : 0) * g_stream.sample_rate / 10000000ull;
-    if (dur_frames < g_stream.sample_rate / 10) dur_frames = g_stream.sample_rate / 10;
-    if (dur_frames > g_stream.sample_rate * 4) dur_frames = g_stream.sample_rate * 4;
-    g_stream.buffer_frames = (UINT32)dur_frames;
-    free(g_stream.ring);
-    g_stream.ring = (BYTE *)calloc(g_stream.buffer_frames, g_stream.frame_bytes);
-    free(g_stream.render_scratch);
-    g_stream.scratch_frames = g_stream.buffer_frames;
-    g_stream.render_scratch = (BYTE *)calloc(g_stream.scratch_frames, g_stream.frame_bytes);
-    g_stream.pending_frames = 0;
-    atomic_store(&g_stream.write_pos, 0);
-    atomic_store(&g_stream.play_pos, 0);
+    dur_frames = (uint64_t)(p->duration > 0 ? p->duration : 0) * s->sample_rate / 10000000ull;
+    if (dur_frames < s->sample_rate / 10) dur_frames = s->sample_rate / 10;
+    if (dur_frames > s->sample_rate * 4) dur_frames = s->sample_rate * 4;
+    s->buffer_frames = (UINT32)dur_frames;
+    free(s->ring);
+    s->ring = (BYTE *)calloc(s->buffer_frames, s->frame_bytes);
+    free(s->render_scratch);
+    s->scratch_frames = s->buffer_frames;
+    s->render_scratch = (BYTE *)calloc(s->scratch_frames, s->frame_bytes);
+    s->pending_frames = 0;
+    atomic_store(&s->write_pos, 0);
+    atomic_store(&s->play_pos, 0);
 
-    if (p->flow == eRender && g_stream.ring)
-        ios_audio_setup_unit(&g_stream, p->fmt);   /* failure -> null-mode */
+    if (p->flow == eRender && s->ring)
+        ios_audio_setup_unit(s, p->fmt);   /* failure -> null-mode */
 
-    if (p->channel_count) *p->channel_count = g_stream.channels;
-    if (p->stream) *p->stream = (stream_handle)(uintptr_t)&g_stream;
+    if (p->channel_count) *p->channel_count = s->channels;
+    if (p->stream) *p->stream = (stream_handle)(uintptr_t)s;
+    fprintf(stderr, "[ios-astream] ml738 CREATED gen=%u handle=%p rate=%u ch=%u fb=%u\n",
+            g_stream_gen, (void *)s, s->sample_rate, s->channels,
+            s->frame_bytes);
+    if (stream_register(s)) {
+        fprintf(stderr, "[ios-astream] ml739 too many streams -- refusing\n");
+        ios_audio_teardown_unit(s);
+        free(s->render_scratch); free(s->ring); free(s);
+        /* the handle was published above; it now points at freed memory */
+        if (p->stream) *p->stream = 0;
+        p->result = E_OUTOFMEMORY;
+        return STATUS_SUCCESS;
+    }
     p->result = S_OK;
     return STATUS_SUCCESS;
 }
 
 static NTSTATUS ios_release_stream(void *args) {
     struct release_stream_params *p = args;
-    ios_audio_teardown_unit(&g_stream);
-    g_stream.valid = 0;      /* timer_loop notices and exits */
-    g_stream.started = 0;
+    struct ios_stream *s = stream_from_handle(p->stream);
+
+    if (!s) { p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
+
+    /* Order matters. Mark this stream dead first so its own timer thread
+     * leaves its loop, join that thread, and only then dispose the AudioUnit
+     * so the render callback cannot still be running against memory we are
+     * about to free. Nothing here touches another client's stream. */
+    s->valid = 0;
+    s->started = 0;
+    if (p->timer_thread) {
+        NtWaitForSingleObject(p->timer_thread, FALSE, NULL);
+        NtClose(p->timer_thread);
+    }
+    ios_audio_teardown_unit(s);
+    stream_unregister(s);
+    free(s->render_scratch);
+    free(s->ring);
+    free(s);
     p->result = S_OK;
     return STATUS_SUCCESS;
 }
@@ -555,18 +685,20 @@ static NTSTATUS ios_release_stream(void *args) {
 static NTSTATUS ios_start(void *args) {
     LOG_FN_CALL(6, "start");
     struct stream_handle_params *p = args;
-    if (!g_stream.started) {
-        if (g_stream.au && !g_stream.au_running) {
-            OSStatus err = AudioOutputUnitStart(g_stream.au);
+    struct ios_stream *s = stream_from_handle(p->stream);
+    if (!s) { p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
+    if (!s->started) {
+        if (s->au && !s->au_running) {
+            OSStatus err = AudioOutputUnitStart(s->au);
             if (err) {
                 fprintf(stderr, "[ios_audio] AudioOutputUnitStart: %d — null-mode\n", (int)err);
-                ios_audio_teardown_unit(&g_stream);
+                ios_audio_teardown_unit(s);
             } else {
-                g_stream.au_running = 1;
+                s->au_running = 1;
             }
         }
-        g_stream.start_mach = mach_absolute_time();
-        g_stream.started = 1;
+        s->start_mach = mach_absolute_time();
+        s->started = 1;
     }
     p->result = S_OK;
     return STATUS_SUCCESS;
@@ -574,13 +706,15 @@ static NTSTATUS ios_start(void *args) {
 
 static NTSTATUS ios_stop(void *args) {
     struct stream_handle_params *p = args;
-    if (g_stream.started) {
-        if (g_stream.au && g_stream.au_running) {
-            AudioOutputUnitStop(g_stream.au);
-            g_stream.au_running = 0;
+    struct ios_stream *s = stream_from_handle(p->stream);
+    if (!s) { p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
+    if (s->started) {
+        if (s->au && s->au_running) {
+            AudioOutputUnitStop(s->au);
+            s->au_running = 0;
         }
-        g_stream.accumulated_frames = elapsed_frames(&g_stream);
-        g_stream.started = 0;
+        s->accumulated_frames = elapsed_frames(s);
+        s->started = 0;
     }
     p->result = S_OK;
     return STATUS_SUCCESS;
@@ -588,13 +722,15 @@ static NTSTATUS ios_stop(void *args) {
 
 static NTSTATUS ios_reset(void *args) {
     struct stream_handle_params *p = args;
-    g_stream.started = 0;
-    g_stream.accumulated_frames = 0;
-    g_stream.start_mach = 0;
+    struct ios_stream *s = stream_from_handle(p->stream);
+    if (!s) { p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
+    s->started = 0;
+    s->accumulated_frames = 0;
+    s->start_mach = 0;
     /* Drop queued-but-unplayed audio (only legal while stopped). */
-    atomic_store(&g_stream.write_pos, 0);
-    atomic_store(&g_stream.play_pos, 0);
-    g_stream.pending_frames = 0;
+    atomic_store(&s->write_pos, 0);
+    atomic_store(&s->play_pos, 0);
+    s->pending_frames = 0;
     p->result = S_OK;
     return STATUS_SUCCESS;
 }
@@ -603,12 +739,14 @@ static NTSTATUS ios_timer_loop(void *args) {
     /* Runs on a dedicated Wine thread mmdevapi spawns for event-driven
      * clients. Wake the client every device period so it refills the
      * ring; exit when the stream dies. */
-    (void)args;
+    struct timer_loop_params *p = args;
+    struct ios_stream *s = stream_from_handle(p->stream);
+    if (!s) return STATUS_SUCCESS;
     LOG_FN_CALL(9, "timer_loop");
-    while (g_stream.valid) {
+    while (s->valid) {
         usleep(10000); /* device period, 10 ms */
-        if (g_stream.event && g_stream.started)
-            NtSetEvent(g_stream.event, NULL);
+        if (s->event && s->started)
+            NtSetEvent(s->event, NULL);
     }
     return STATUS_SUCCESS;
 }
@@ -616,53 +754,57 @@ static NTSTATUS ios_timer_loop(void *args) {
 static NTSTATUS ios_get_render_buffer(void *args) {
     LOG_FN_CALL(10, "get_render_buffer");
     struct get_render_buffer_params *p = args;
-    if (g_stream.au) {
-        uint64_t padding = atomic_load(&g_stream.write_pos) - atomic_load(&g_stream.play_pos);
-        if (p->frames + padding > g_stream.buffer_frames) {
+    struct ios_stream *s = stream_from_handle(p->stream);
+    if (!s) { if (p->data) *p->data = NULL; p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
+    if (s->au) {
+        uint64_t padding = atomic_load(&s->write_pos) - atomic_load(&s->play_pos);
+        if (p->frames + padding > s->buffer_frames) {
             p->result = (HRESULT)0x88890006L; /* AUDCLNT_E_BUFFER_TOO_LARGE */
             if (p->data) *p->data = NULL;
             return STATUS_SUCCESS;
         }
     }
-    if (p->frames > g_stream.scratch_frames) {
+    if (p->frames > s->scratch_frames) {
         /* Client asked for more than the ring — grow scratch; the copy in
          * release clamps to ring capacity anyway. */
-        BYTE *ns = (BYTE *)realloc(g_stream.render_scratch,
-                                   (size_t)p->frames * g_stream.frame_bytes);
+        BYTE *ns = (BYTE *)realloc(s->render_scratch,
+                                   (size_t)p->frames * s->frame_bytes);
         if (!ns) { p->result = E_FAIL; return STATUS_SUCCESS; }
-        g_stream.render_scratch = ns;
-        g_stream.scratch_frames = p->frames;
+        s->render_scratch = ns;
+        s->scratch_frames = p->frames;
     }
-    g_stream.pending_frames = p->frames;
-    if (p->data) *p->data = g_stream.render_scratch;
+    s->pending_frames = p->frames;
+    if (p->data) *p->data = s->render_scratch;
     p->result = S_OK;
     return STATUS_SUCCESS;
 }
 
 static NTSTATUS ios_release_render_buffer(void *args) {
     struct release_render_buffer_params *p = args;
-    if (g_stream.au && p->written_frames > 0) {
-        UINT32 fb = g_stream.frame_bytes;
-        UINT32 cap = g_stream.buffer_frames;
+    struct ios_stream *s = stream_from_handle(p->stream);
+    if (!s) { p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
+    if (s->au && p->written_frames > 0) {
+        UINT32 fb = s->frame_bytes;
+        UINT32 cap = s->buffer_frames;
         UINT32 n = p->written_frames;
-        uint64_t wr = atomic_load_explicit(&g_stream.write_pos, memory_order_relaxed);
+        uint64_t wr = atomic_load_explicit(&s->write_pos, memory_order_relaxed);
         UINT32 i = 0;
-        if (n > g_stream.pending_frames) n = g_stream.pending_frames;
+        if (n > s->pending_frames) n = s->pending_frames;
         if (p->flags & 0x2 /* AUDCLNT_BUFFERFLAGS_SILENT */)
-            memset(g_stream.render_scratch, 0, (size_t)n * fb);
+            memset(s->render_scratch, 0, (size_t)n * fb);
         while (i < n) {
             UINT32 idx = (UINT32)((wr + i) % cap);
             UINT32 chunk = cap - idx;
             if (chunk > n - i) chunk = n - i;
-            memcpy(g_stream.ring + (size_t)idx * fb,
-                   g_stream.render_scratch + (size_t)i * fb, (size_t)chunk * fb);
+            memcpy(s->ring + (size_t)idx * fb,
+                   s->render_scratch + (size_t)i * fb, (size_t)chunk * fb);
             i += chunk;
         }
         /* release-store AFTER the copy so the RT callback never reads
          * frames that aren't fully written */
-        atomic_store_explicit(&g_stream.write_pos, wr + n, memory_order_release);
+        atomic_store_explicit(&s->write_pos, wr + n, memory_order_release);
     }
-    g_stream.pending_frames = 0;
+    s->pending_frames = 0;
     p->result = S_OK;
     return STATUS_SUCCESS;
 }
@@ -736,7 +878,9 @@ static NTSTATUS ios_get_device_period(void *args) {
 
 static NTSTATUS ios_get_buffer_size(void *args) {
     struct get_buffer_size_params *p = args;
-    if (p->frames) *p->frames = g_stream.buffer_frames ? g_stream.buffer_frames
+    struct ios_stream *s = stream_from_handle(p->stream);
+    if (!s) { if (p->frames) *p->frames = 0; p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
+    if (p->frames) *p->frames = s->buffer_frames ? s->buffer_frames
                                                        : IOS_AUDIO_BUFFER_FRAMES;
     p->result = S_OK;
     return STATUS_SUCCESS;
@@ -752,10 +896,12 @@ static NTSTATUS ios_get_latency(void *args) {
 static NTSTATUS ios_get_current_padding(void *args) {
     LOG_FN_CALL(20, "get_current_padding");
     struct get_current_padding_params *p = args;
+    struct ios_stream *s = stream_from_handle(p->stream);
+    if (!s) { if (p->padding) *p->padding = 0; p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
     if (p->padding) {
-        if (g_stream.au) {
-            uint64_t pad = atomic_load(&g_stream.write_pos) - atomic_load(&g_stream.play_pos);
-            *p->padding = (UINT32)(pad > g_stream.buffer_frames ? g_stream.buffer_frames : pad);
+        if (s->au) {
+            uint64_t pad = atomic_load(&s->write_pos) - atomic_load(&s->play_pos);
+            *p->padding = (UINT32)(pad > s->buffer_frames ? s->buffer_frames : pad);
         } else {
             *p->padding = 0; /* null-mode: always hungry */
         }
@@ -773,8 +919,10 @@ static NTSTATUS ios_get_next_packet_size(void *args) {
 
 static NTSTATUS ios_get_frequency(void *args) {
     struct get_frequency_params *p = args;
+    struct ios_stream *s = stream_from_handle(p->stream);
+    if (!s) { if (p->freq) *p->freq = 0; p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
     /* Returns the device frequency in Hz — what units IAudioClock uses. */
-    if (p->freq) *p->freq = g_stream.sample_rate ? g_stream.sample_rate : IOS_AUDIO_SAMPLE_RATE;
+    if (p->freq) *p->freq = s->sample_rate ? s->sample_rate : IOS_AUDIO_SAMPLE_RATE;
     p->result = S_OK;
     return STATUS_SUCCESS;
 }
@@ -782,14 +930,16 @@ static NTSTATUS ios_get_frequency(void *args) {
 static NTSTATUS ios_get_position(void *args) {
     LOG_FN_CALL(23, "get_position");
     struct get_position_params *p = args;
+    struct ios_stream *s = stream_from_handle(p->stream);
+    if (!s) { if (p->pos) *p->pos = 0; p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
     /* THIS is the function that drives FMOD's clock. Tier-2: frames the
      * RT callback actually consumed — the true hardware clock. Null-mode
      * fallback: wall-clock synthesis as before. */
     if (p->pos) {
-        if (g_stream.au)
-            *p->pos = atomic_load(&g_stream.play_pos);
+        if (s->au)
+            *p->pos = atomic_load(&s->play_pos);
         else
-            *p->pos = elapsed_frames(&g_stream);
+            *p->pos = elapsed_frames(s);
     }
     if (p->qpctime) *p->qpctime = mach_to_ns(mach_absolute_time()) / 100; /* 100ns ticks */
     p->result = S_OK;
@@ -803,14 +953,26 @@ static NTSTATUS ios_set_volumes(void *args) {
 
 static NTSTATUS ios_set_event_handle(void *args) {
     struct set_event_handle_params *p = args;
-    g_stream.event = p->event;
+    struct ios_stream *s = stream_from_handle(p->stream);
+    if (!s) { p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
+    if (s->event && s->event != p->event)
+        fprintf(stderr, "[ios-astream] ml738 EVENT OVERWRITE gen=%u old=%p new=%p tid=%llx "
+                        "-- the previous client will never be signalled again\n",
+                g_stream_gen, s->event, p->event,
+                (unsigned long long)ios_current_tid());
+    else
+        fprintf(stderr, "[ios-astream] ml738 EVENT set gen=%u handle=%p tid=%llx\n",
+                g_stream_gen, p->event, (unsigned long long)ios_current_tid());
+    s->event = p->event;
     p->result = S_OK;
     return STATUS_SUCCESS;
 }
 
 static NTSTATUS ios_set_sample_rate(void *args) {
     struct set_sample_rate_params *p = args;
-    if (p->rate > 0) g_stream.sample_rate = (UINT32)p->rate;
+    struct ios_stream *s = stream_from_handle(p->stream);
+    if (!s) { p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
+    if (p->rate > 0) s->sample_rate = (UINT32)p->rate;
     p->result = S_OK;
     return STATUS_SUCCESS;
 }
@@ -824,7 +986,9 @@ static NTSTATUS ios_test_connect(void *args) {
 
 static NTSTATUS ios_is_started(void *args) {
     struct is_started_params *p = args;
-    p->result = g_stream.started ? S_OK : S_FALSE;
+    struct ios_stream *s = stream_from_handle(p->stream);
+    if (!s) { p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
+    p->result = s->started ? S_OK : S_FALSE;
     return STATUS_SUCCESS;
 }
 
