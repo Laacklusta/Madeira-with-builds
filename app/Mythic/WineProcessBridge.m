@@ -396,11 +396,11 @@ static void *wine_process_thread(void *arg) {
                  * "iOS JIT: copied image"). Those produce thousands of lines
                  * per boot. Real failures in virtual_ios.c use distinctive
                  * FATAL/FAIL prefixes our app surfaces via other paths. */
-                /* ml734: +warn+seh so the Theorafile tracer's OutputDebugStringA
-                 * reaches the log. Wine emits that string through WARN() on the
-                 * seh channel, which err+all filters out -- the wrappers ran
-                 * correctly last build and their output was silently dropped. */
-                setenv("WINEDEBUG", "err+all,err-virtual,warn+seh", 1);
+                /* ml740: warn+seh removed again now the tracing it existed for is
+                 * done. It routes every OutputDebugStringA through an exception
+                 * dispatch, which is real overhead in hot paths; re-add it only
+                 * alongside MYTHIC_TF_TRACE. */
+                setenv("WINEDEBUG", "err+all,err-virtual", 1);
                 LOG("WINEDEBUG = err+all,err-virtual (perf default — set MYTHIC_DEBUG_VERBOSE=1 for full trace)");
             }
         }
