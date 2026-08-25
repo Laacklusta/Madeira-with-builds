@@ -396,7 +396,11 @@ static void *wine_process_thread(void *arg) {
                  * "iOS JIT: copied image"). Those produce thousands of lines
                  * per boot. Real failures in virtual_ios.c use distinctive
                  * FATAL/FAIL prefixes our app surfaces via other paths. */
-                setenv("WINEDEBUG", "err+all,err-virtual", 1);
+                /* ml734: +warn+seh so the Theorafile tracer's OutputDebugStringA
+                 * reaches the log. Wine emits that string through WARN() on the
+                 * seh channel, which err+all filters out -- the wrappers ran
+                 * correctly last build and their output was silently dropped. */
+                setenv("WINEDEBUG", "err+all,err-virtual,warn+seh", 1);
                 LOG("WINEDEBUG = err+all,err-virtual (perf default — set MYTHIC_DEBUG_VERBOSE=1 for full trace)");
             }
         }
@@ -443,8 +447,12 @@ static void *wine_process_thread(void *arg) {
          *
          * overwrite=0 so an explicit setting still wins; MONO_ is already in env_ios.c's
          * [iOS env] beacon list, so the next log proves whether these arrived. */
-        setenv("MONO_LOG_LEVEL", "debug", 0);
-        setenv("MONO_LOG_MASK", "asm,dll", 0);
+        /* ml733: was "debug"/"asm,dll", which existed to diagnose DLL
+         * resolution. That work is finished, and it now emits ~62,000 identical
+         * assembly-load lines in a single run -- most of a 100k-line log, plus
+         * the I/O cost of writing them, on a title we are trying to time.
+         * "warning" keeps genuine failures and drops the chatter. */
+        setenv("MONO_LOG_LEVEL", "warning", 0);
 
         /* 2026-07-05 quiet/release mode: disables the heavyweight
          * diagnostics — the PROF sampler (thread_suspends the game thread

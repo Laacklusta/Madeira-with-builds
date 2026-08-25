@@ -1874,6 +1874,23 @@ struct ContentView: View {
                 }
             }
 
+            // ml734: Theorafile call tracer. Documents/mythic-tf-trace.txt == "1"
+            // redirects libtheorafile's tf_* exports through wrappers in
+            // tftrace-x64.dll that call the original and report the RETURN
+            // value. The intro decodes and plays, the stream reaches a clean
+            // end of file, the decoder stops reading -- and the game never
+            // leaves VideoContext. File EOF is not decoder EOS, and a call
+            // count cannot tell "tf_eos returns false forever" from "it returns
+            // true and the managed side ignores it". Only the return value can.
+            if let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+               let txt = try? String(contentsOf: d.appendingPathComponent("mythic-tf-trace.txt"), encoding: .utf8) {
+                let v = txt.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !v.isEmpty {
+                    setenv("MYTHIC_TF_TRACE", v, 1)
+                    logStore.log("Theorafile tracer: MYTHIC_TF_TRACE=\(v) via mythic-tf-trace.txt")
+                }
+            }
+
             // ml731: Windows shared-data clock A/B. Documents/mythic-usd-time.txt == "1"
             // makes wineserver update KUSER_SHARED_DATA's SystemTime, InterruptTime
             // and TickCount again. Without it those stay frozen at their init values,
