@@ -5,15 +5,15 @@
 # app bundle (PE binaries, NLS, fonts). What's left is the registry + directory
 # skeleton — the iOS app symlinks bundle resources on top after extraction.
 #
-# Output: app/Mythic/prefix-template.tar.gz
+# Output: app/Madeira/prefix-template.tar.gz
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-OUTPUT="$REPO_ROOT/app/Mythic/prefix-template.tar.gz"
+OUTPUT="$REPO_ROOT/app/Madeira/prefix-template.tar.gz"
 
-WORK_DIR="$(mktemp -d /Users/"$USER"/mythic-prefix-build.XXXXXX)"
+WORK_DIR="$(mktemp -d /Users/"$USER"/madeira-prefix-build.XXXXXX)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 PREFIX="$WORK_DIR/prefix"
 
@@ -33,12 +33,12 @@ if [[ ! -f "$PREFIX/.update-timestamp" ]]; then
     exit 1
 fi
 
-echo "==> Normalizing build-host username to 'mythic'"
+echo "==> Normalizing build-host username to 'madeira'"
 # Wine bakes $USER into drive_c/users/$USER and references it from .reg files.
 # Rewrite to a stable name so the prefix is portable across build machines.
 BUILD_USER="$(id -un)"
-if [[ -d "$PREFIX/drive_c/users/$BUILD_USER" && "$BUILD_USER" != "mythic" ]]; then
-    mv "$PREFIX/drive_c/users/$BUILD_USER" "$PREFIX/drive_c/users/mythic"
+if [[ -d "$PREFIX/drive_c/users/$BUILD_USER" && "$BUILD_USER" != "madeira" ]]; then
+    mv "$PREFIX/drive_c/users/$BUILD_USER" "$PREFIX/drive_c/users/madeira"
 fi
 # Replace both literal `users\BUILD_USER` and any Z:\Users\BUILD_USER host paths.
 # The Z:-prefixed ones are host-side fonts Wine auto-registered; stripping the
@@ -48,11 +48,11 @@ for reg in "$PREFIX"/system.reg "$PREFIX"/user.reg "$PREFIX"/userdef.reg; do
     # Remove lines pointing into the host's home (Mac fonts, etc.)
     sed -i '' -E "/Z:\\\\\\\\Users\\\\\\\\$BUILD_USER\\\\\\\\/d" "$reg"
     # Rewrite in-prefix paths: both `users\NAME\...` and terminal `users\NAME"`
-    sed -i '' -E "s|users\\\\\\\\$BUILD_USER\\\\|users\\\\mythic\\\\|g" "$reg"
-    sed -i '' -E "s|users\\\\\\\\$BUILD_USER\"|users\\\\mythic\"|g" "$reg"
+    sed -i '' -E "s|users\\\\\\\\$BUILD_USER\\\\|users\\\\madeira\\\\|g" "$reg"
+    sed -i '' -E "s|users\\\\\\\\$BUILD_USER\"|users\\\\madeira\"|g" "$reg"
     # Bare username (USERNAME= value, and \users\NAME without drive letter)
-    sed -i '' -E "s|=\"$BUILD_USER\"|=\"mythic\"|g" "$reg"
-    sed -i '' -E "s|\\\\\\\\users\\\\\\\\$BUILD_USER\"|\\\\users\\\\mythic\"|g" "$reg"
+    sed -i '' -E "s|=\"$BUILD_USER\"|=\"madeira\"|g" "$reg"
+    sed -i '' -E "s|\\\\\\\\users\\\\\\\\$BUILD_USER\"|\\\\users\\\\madeira\"|g" "$reg"
 done
 
 echo "==> Stripping files shipped in app bundle"
@@ -63,7 +63,7 @@ find "$PREFIX/drive_c" -type f \( \
     -o -name "*.ocx" -o -name "*.mui" -o -name "*.rll" \
     \) -delete
 
-# NLS files are bundled separately in app/Mythic/nls/
+# NLS files are bundled separately in app/Madeira/nls/
 find "$PREFIX/drive_c/windows/system32" -maxdepth 1 -name "*.nls" -delete 2>/dev/null || true
 rm -rf "$PREFIX/drive_c/windows/globalization"
 

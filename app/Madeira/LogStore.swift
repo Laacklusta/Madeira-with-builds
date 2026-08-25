@@ -59,7 +59,7 @@ final class LogStore: ObservableObject {
 
     private init() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        logFileURL = docs.appendingPathComponent("mythic-log.txt")
+        logFileURL = docs.appendingPathComponent("madeira-log.txt")
 
         // ml601: ROTATE, don't destroy.
         //
@@ -71,8 +71,8 @@ final class LogStore: ObservableObject {
         // worth one file's worth of disk.
         //
         // Pull the previous run with the usual devicectl command, substituting
-        // Documents/mythic-log.prev.txt for Documents/mythic-log.txt.
-        let prevLogURL = docs.appendingPathComponent("mythic-log.prev.txt")
+        // Documents/madeira-log.prev.txt for Documents/madeira-log.txt.
+        let prevLogURL = docs.appendingPathComponent("madeira-log.prev.txt")
         if FileManager.default.fileExists(atPath: logFileURL.path) {
             try? FileManager.default.removeItem(at: prevLogURL)
             try? FileManager.default.moveItem(at: logFileURL, to: prevLogURL)

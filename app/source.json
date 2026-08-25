@@ -1,11 +1,11 @@
 {
-  "name": "Mythic",
-  "identifier": "com.mythic.emulator",
+  "name": "Madeira",
+  "identifier": "com.madeira.emulator",
   "apps": [
     {
-      "name": "Mythic",
-      "bundleIdentifier": "com.mythic.emulator",
-      "developerName": "Mythic Team",
+      "name": "Madeira",
+      "bundleIdentifier": "com.madeira.emulator",
+      "developerName": "Madeira Team",
       "version": "0.1.0",
       "versionDate": "2026-03-07",
       "versionDescription": "Initial release with JIT allocator, dual-mapped memory testing, and entitlement detection.",

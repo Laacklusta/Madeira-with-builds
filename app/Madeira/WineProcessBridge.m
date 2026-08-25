@@ -37,7 +37,7 @@ _Thread_local int wine_ios_exit_initialized = 0;
 static os_log_t wine_proc_log(void) {
     static os_log_t log;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ log = os_log_create("com.mythic.emulator", "wine-proc"); });
+    dispatch_once(&once, ^{ log = os_log_create("com.madeira.emulator", "wine-proc"); });
     return log;
 }
 
@@ -61,7 +61,7 @@ static os_log_t wine_proc_log(void) {
  * never destroy user or Steam data -- it only restores the "absent" state
  * Wine's population is gated on. Idempotent: after the first clean boot
  * repopulates the tree, there are no .keep files left and it does nothing. */
-static int mythic_prune_keep_tree(const char *dir, int depth)
+static int madeira_prune_keep_tree(const char *dir, int depth)
 {
     DIR *d = opendir( dir );
     if (!d) return 0;                       /* absent/unreadable => nothing to do */
@@ -84,7 +84,7 @@ static int mythic_prune_keep_tree(const char *dir, int depth)
 
         if (S_ISDIR( st.st_mode ) && depth > 0)
         {
-            if (mythic_prune_keep_tree( path, depth - 1 ) > 0) survivors++;
+            if (madeira_prune_keep_tree( path, depth - 1 ) > 0) survivors++;
             else if (rmdir( path ) != 0) survivors++;   /* non-empty or denied */
             else LOG( "keep-prune: rmdir %{public}s", path );
         }
@@ -99,17 +99,17 @@ static int mythic_prune_keep_tree(const char *dir, int depth)
     return survivors;
 }
 
-/* ---- ml666: PROFILE REPAIR — the "usersmythic" escaping bug -------------
+/* ---- ml666: PROFILE REPAIR — the "usersmadeira" escaping bug -------------
  *
- * The shipped .reg files wrote  "C:\\users\mythic\\AppData\\Roaming"  with a
- * SINGLE backslash before `mythic`. In .reg syntax `\\` is a literal backslash
+ * The shipped .reg files wrote  "C:\\users\madeira\\AppData\\Roaming"  with a
+ * SINGLE backslash before `madeira`. In .reg syntax `\\` is a literal backslash
  * and a lone `\` starts an escape; `\m` is not a valid escape, so the backslash
- * was dropped and every shell folder resolved to  C:\usersmythic\...  -- a
+ * was dropped and every shell folder resolved to  C:\usersmadeira\...  -- a
  * directory that never existed. 57 sites across user.reg/userdef.reg plus 3
  * already-collapsed in system.reg.
  *
  * It degraded silently for months: %TEMP% pointed there too, so Wine happily
- * CREATED C:\usersmythic\AppData\Local\Temp and filled it (683 files and a CEF
+ * CREATED C:\usersmadeira\AppData\Local\Temp and filled it (683 files and a CEF
  * cache on the dev device). Only paths whose parents are NOT auto-created broke
  * -- notably LocalLow, where Unity's log CreateDirectory failed, which left
  * stdout closed at _file=-1 and fast-failed the CRT inside _isatty.
@@ -117,8 +117,8 @@ static int mythic_prune_keep_tree(const char *dir, int depth)
  * The template is fixed, but an existing prefix keeps the collapsed strings in
  * its own user.reg (Wine rewrote them after parsing). So repair on disk, before
  * __wine_main, once:
- *   1. rewrite  C:\\usersmythic  ->  C:\\users\\mythic  in the three .reg files
- *   2. MOVE (never delete) drive_c/usersmythic/* into drive_c/users/mythic/*
+ *   1. rewrite  C:\\usersmadeira  ->  C:\\users\\madeira  in the three .reg files
+ *   2. MOVE (never delete) drive_c/usersmadeira/* into drive_c/users/madeira/*
  *   3. ensure the AppData skeleton exists
  * Idempotent and marker-gated. Step 2 merges and refuses to clobber: if a
  * destination already exists the source is left in place for manual review,
@@ -138,12 +138,12 @@ static int ios_reg_unmangle(const char *path)
     buf[n] = 0;
 
     /* ml667: anchored on "C:" originally, which MISSED the one value that has
-     * no drive letter -- HOMEPATH = "\\usersmythic". HOMEDRIVE+HOMEPATH is a
+     * no drive letter -- HOMEPATH = "\\usersmadeira". HOMEDRIVE+HOMEPATH is a
      * standard way to reach the profile, so that single miss left the default
      * path broken while everything else looked repaired. Match the collapsed
      * token itself; it reconstructs correctly with or without a drive prefix. */
-    static const char BAD[]  = "usersmythic";
-    static const char GOOD[] = "users\\\\mythic";
+    static const char BAD[]  = "usersmadeira";
+    static const char GOOD[] = "users\\\\madeira";
     const size_t bl = sizeof(BAD) - 1, gl = sizeof(GOOD) - 1;
     size_t hits = 0;
     for (char *q = buf; (q = strstr( q, BAD )); q += bl) hits++;
@@ -204,18 +204,18 @@ static void ios_merge_move(const char *src, const char *dst, int depth)
     rmdir( src );                       /* only succeeds once genuinely empty */
 }
 
-static void mythic_repair_profile(NSString *prefix)
+static void madeira_repair_profile(NSString *prefix)
 {
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSString *marker = [prefix stringByAppendingPathComponent:@".mythic-profile-repaired-ml667"];
+    NSString *marker = [prefix stringByAppendingPathComponent:@".madeira-profile-repaired-ml667"];
     if ([fm fileExistsAtPath:marker]) return;
 
     int fixed = 0;
     for (NSString *reg in @[ @"user.reg", @"userdef.reg", @"system.reg" ])
         fixed += ios_reg_unmangle( [prefix stringByAppendingPathComponent:reg].fileSystemRepresentation );
 
-    NSString *bad  = [prefix stringByAppendingPathComponent:@"drive_c/usersmythic"];
-    NSString *good = [prefix stringByAppendingPathComponent:@"drive_c/users/mythic"];
+    NSString *bad  = [prefix stringByAppendingPathComponent:@"drive_c/usersmadeira"];
+    NSString *good = [prefix stringByAppendingPathComponent:@"drive_c/users/madeira"];
     if ([fm fileExistsAtPath:bad])
     {
         [fm createDirectoryAtPath:good withIntermediateDirectories:YES attributes:nil error:nil];
@@ -239,13 +239,13 @@ static void mythic_repair_profile(NSString *prefix)
     LOG( "profile-repair: complete (%d registry path(s) rewritten)", fixed );
 }
 
-static void mythic_undo_appdata_skeleton(NSString *prefix)
+static void madeira_undo_appdata_skeleton(NSString *prefix)
 {
     /* ml666: SCOPED DOWN. As written this walked EVERY user and removed ANY
      * empty tree, which made it far more destructive than its own comment
      * claimed. Two consequences, both observed:
      *
-     *   - It deleted the legitimate, registered users/mythic AppData skeleton
+     *   - It deleted the legitimate, registered users/madeira AppData skeleton
      *     that prefix-template.tar.gz ships -- the very directories Wine's
      *     population and Unity's log path depend on.
      *   - Given a freshly created empty Roaming/LocalLow it removed those too,
@@ -259,7 +259,7 @@ static void mythic_undo_appdata_skeleton(NSString *prefix)
      * three leaf roots are never themselves removed, and the whole thing is
      * marker-gated so it runs once instead of on every launch. */
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSString *marker = [prefix stringByAppendingPathComponent:@".mythic-keepprune-done-ml666"];
+    NSString *marker = [prefix stringByAppendingPathComponent:@".madeira-keepprune-done-ml666"];
     if ([fm fileExistsAtPath:marker]) return;
 
     NSString *appdata = [prefix stringByAppendingPathComponent:@"drive_c/users/mobile/AppData"];
@@ -270,7 +270,7 @@ static void mythic_undo_appdata_skeleton(NSString *prefix)
          * .keep placeholders and the empty dirs they propped up are removed --
          * the leaf root itself always stays. */
         NSString *path = [appdata stringByAppendingPathComponent:leaf];
-        mythic_prune_keep_tree( path.fileSystemRepresentation, 6 );
+        madeira_prune_keep_tree( path.fileSystemRepresentation, 6 );
     }
     [@"ml666" writeToFile:marker atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
@@ -287,7 +287,7 @@ static volatile int g_wine_running = 0;
 static char *g_prefix_path = NULL;
 
 /***********************************************************************
- *           mythic_seed_prefix_if_needed
+ *           madeira_seed_prefix_if_needed
  *
  * Extract the bundled prefix template on first launch and (re)create the
  * dosdevices links. Idempotent: the .update-timestamp probe makes every call
@@ -304,7 +304,7 @@ static char *g_prefix_path = NULL;
  * ActivatableClassId (Thumper aborts on RoGetActivationFactory for
  * Windows.Gaming.Input.Gamepad), and no Fonts keys (the #61/#70 dwrite fix).
  */
-void mythic_seed_prefix_if_needed(const char *prefix_path) {
+void madeira_seed_prefix_if_needed(const char *prefix_path) {
     @autoreleasepool {
         if (!prefix_path) return;
         NSString *prefix = [NSString stringWithUTF8String:prefix_path];
@@ -319,7 +319,7 @@ void mythic_seed_prefix_if_needed(const char *prefix_path) {
                 LOG("prefix-template.tar.gz missing from bundle!");
             } else {
                 LOG("Seeding prefix from %{public}s", tgz.UTF8String);
-                if (mythic_extract_prefix_tgz(tgz.UTF8String, prefix_path) != 0) {
+                if (madeira_extract_prefix_tgz(tgz.UTF8String, prefix_path) != 0) {
                     LOG("prefix extraction FAILED");
                 } else {
                     LOG("prefix seeded to %{public}s", prefix_path);
@@ -335,11 +335,11 @@ void mythic_seed_prefix_if_needed(const char *prefix_path) {
         [fm removeItemAtPath:cLink error:nil];
         [fm createSymbolicLinkAtPath:cLink withDestinationPath:@"../drive_c" error:nil];
 
-        /* ml666: repair the usersmythic escaping damage BEFORE anything reads
+        /* ml666: repair the usersmadeira escaping damage BEFORE anything reads
          * the registry, then the (now scoped) ml581 legacy cleanup. */
-        mythic_repair_profile( prefix );
-        /* ml581: see mythic_undo_appdata_skeleton() above. */
-        mythic_undo_appdata_skeleton( prefix );
+        madeira_repair_profile( prefix );
+        /* ml581: see madeira_undo_appdata_skeleton() above. */
+        madeira_undo_appdata_skeleton( prefix );
     }
 }
 
@@ -356,7 +356,7 @@ static void *wine_process_thread(void *arg) {
          * server loads the registry. Kept here as a safety net for any path
          * that reaches Wine without going through wineserver_start() — the
          * stamp probe makes it a no-op stat once the prefix exists. */
-        mythic_seed_prefix_if_needed(g_prefix_path);
+        madeira_seed_prefix_if_needed(g_prefix_path);
 
         // Set environment for Wine
         setenv("WINEPREFIX", g_prefix_path, 1);
@@ -382,13 +382,13 @@ static void *wine_process_thread(void *arg) {
          * are likely 90%+ of the volume (every Nt* call writes 3-5 log lines).
          *
          * Default is now PERF: only err+all (so we still see real failures).
-         * For debugging, set MYTHIC_DEBUG_VERBOSE=1 in the environment to
+         * For debugging, set MADEIRA_DEBUG_VERBOSE=1 in the environment to
          * restore the full trace channel set. */
         {
-            const char *verbose = getenv("MYTHIC_DEBUG_VERBOSE");
+            const char *verbose = getenv("MADEIRA_DEBUG_VERBOSE");
             if (verbose && *verbose && *verbose != '0') {
                 setenv("WINEDEBUG", "err+all,fixme+all,warn+module,warn+file,trace+process,trace+module,trace+loaddll,trace+loadorder,trace+win,trace+user32,trace+syscall,trace+file", 1);
-                LOG("WINEDEBUG = verbose (MYTHIC_DEBUG_VERBOSE set)");
+                LOG("WINEDEBUG = verbose (MADEIRA_DEBUG_VERBOSE set)");
             } else {
                 /* err+all keeps real failure messages, but subtract err+virtual
                  * because our iOS virtual_ios.c uses ERR() for informational
@@ -399,9 +399,9 @@ static void *wine_process_thread(void *arg) {
                 /* ml740: warn+seh removed again now the tracing it existed for is
                  * done. It routes every OutputDebugStringA through an exception
                  * dispatch, which is real overhead in hot paths; re-add it only
-                 * alongside MYTHIC_TF_TRACE. */
+                 * alongside MADEIRA_TF_TRACE. */
                 setenv("WINEDEBUG", "err+all,err-virtual", 1);
-                LOG("WINEDEBUG = err+all,err-virtual (perf default — set MYTHIC_DEBUG_VERBOSE=1 for full trace)");
+                LOG("WINEDEBUG = err+all,err-virtual (perf default — set MADEIRA_DEBUG_VERBOSE=1 for full trace)");
             }
         }
 
@@ -410,9 +410,9 @@ static void *wine_process_thread(void *arg) {
         // artifact was the prior false signal. Now chasing a real bug:
         // get_desktop_window's returned HWND fails get_user_object lookup
         // when create_window receives it as req->parent.
-        setenv("MYTHIC_WIN32U", "1", 1);
+        setenv("MADEIRA_WIN32U", "1", 1);
 
-        /* iOS-Mythic ml711: default FNA to its D3D11 backend.
+        /* iOS-Madeira ml711: default FNA to its D3D11 backend.
          *
          * FNA3D picks OpenGL by default, and there is no GL on iOS -- our graphics stack
          * is DXMT (D3D11 -> Metal). Marvel Cosmic Invasion loaded FNA3D.dll, immediately
@@ -462,12 +462,12 @@ static void *wine_process_thread(void *arg) {
          * untouched. Worth a few %% of frame time and, more importantly,
          * HEAT — thermals are what cap ProMotion at 60. COMMENT THIS OUT
          * for diagnostic/profiling sessions. */
-        setenv("MYTHIC_QUIET", "1", 1);
+        setenv("MADEIRA_QUIET", "1", 1);
 
         /* task #34 share/purge-probe experiments CONCLUDED 2026-07-14
          * (remap-sharing dead; pool not purgeable; ml76 wall = mismatched
          * MADV_FREE/MADV_FREE_REUSE pair). Probe machinery stays in
-         * ntdll-unix, gated on MYTHIC_SHARE_PROBE — set it here to re-run. */
+         * ntdll-unix, gated on MADEIRA_SHARE_PROBE — set it here to re-run. */
 
         /* 2026-07-05 audio: activate the AVAudioSession before Wine boots
          * so the RemoteIO unit in the mmdevapi driver can start. Playback
@@ -494,7 +494,7 @@ static void *wine_process_thread(void *arg) {
          * prologue dump to name the Metal call handing free() a garbage
          * pointer. */
 
-        /* 2026-07-04: MYTHIC_HEAL retried with XLATE-HOOK-REV in place and
+        /* 2026-07-04: MADEIRA_HEAL retried with XLATE-HOOK-REV in place and
          * STILL fatal — same C000001D libplatform (os_unfair_lock abort)
          * seconds after healing the ntdll dispatch-thunk VA at boot. One of
          * the rewritten slots has a consumer doing identity/offset math on
@@ -524,7 +524,7 @@ static void *wine_process_thread(void *arg) {
         setenv("SteamGameId", "356400", 1);
         setenv("SteamAppId",  "356400", 1);
 
-        /* iOS-Mythic 2026-07-02: publish the TRUE JIT-pool RX->RW offset to
+        /* iOS-Madeira 2026-07-02: publish the TRUE JIT-pool RX->RW offset to
          * xtajit64.dll (its own FEXCore copy reads this via getenv in
          * ProcessInit). Set HERE — beside SteamAppPath, the point where
          * Wine snapshots the environment — so it forwards reliably; setting
@@ -537,20 +537,20 @@ static void *wine_process_thread(void *arg) {
             if (jit_off != 0) {
                 char off_str[32];
                 snprintf(off_str, sizeof(off_str), "0x%llx", (unsigned long long)jit_off);
-                setenv("MYTHIC_JIT_WRITE_OFFSET", off_str, 1);
-                LOG("setenv MYTHIC_JIT_WRITE_OFFSET=%{public}s", off_str);
+                setenv("MADEIRA_JIT_WRITE_OFFSET", off_str, 1);
+                LOG("setenv MADEIRA_JIT_WRITE_OFFSET=%{public}s", off_str);
             } else {
                 LOG("WARNING: fex_get_jit_write_offset() returned 0 — JIT pool not initialized?");
             }
         }
 
-        /* iOS-Mythic: TSO stays ENABLED (default). The unaligned LDAR/LDAPR/
+        /* iOS-Madeira: TSO stays ENABLED (default). The unaligned LDAR/LDAPR/
          * STLR backpatch is now in signal_arm64_ios.c's Mach handler, which
          * replicates FEX's HandleUnalignedAccess (Arm64.cpp:2072) so iOS
          * EXC_BAD_ACCESS faults get the same in-place LDAR→LDR+DMB_LD
          * recovery FEX does for Windows EXCEPTION_DATATYPE_MISALIGNMENT. */
 
-        /* iOS-Mythic: a tiny stub steamclient64.dll is shipped in the game
+        /* iOS-Madeira: a tiny stub steamclient64.dll is shipped in the game
          * directory (built from /tmp/steamclient_stub/stub.c). It exports
          * just VR_InitInternal (returns NULL) — that's the only function
          * CODEX64.dll imports from steamclient64. The real steamclient64.dll
@@ -564,14 +564,14 @@ static void *wine_process_thread(void *arg) {
         // Set up file-based logging for Wine C code
         {
             NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-            NSString *logPath = [docs stringByAppendingPathComponent:@"mythic-log.txt"];
+            NSString *logPath = [docs stringByAppendingPathComponent:@"madeira-log.txt"];
             wine_log_set_file(logPath.UTF8String);
             /* ml519: start the freeze detector as soon as logging works, so
              * every launch (Thumper as well as Steam) yields a measurement. */
             { extern void winios_freeze_watch_start(void); winios_freeze_watch_start(); }
             LOG("Wine log file: %{public}s", logPath.UTF8String);
             /* Expose the app Documents dir to Wine code (e.g. for fex-jit-dump.bin) */
-            setenv("MYTHIC_DOCS_DIR", docs.UTF8String, 1);
+            setenv("MADEIRA_DOCS_DIR", docs.UTF8String, 1);
         }
 
         // Steam S0: root CA trust. iOS has no API to enumerate system
@@ -580,7 +580,7 @@ static void *wine_process_thread(void *arg) {
         {
             NSString *caPath = [[NSBundle mainBundle] pathForResource:@"cacert" ofType:@"pem"];
             if (caPath) {
-                setenv("MYTHIC_CA_BUNDLE", caPath.UTF8String, 1);
+                setenv("MADEIRA_CA_BUNDLE", caPath.UTF8String, 1);
                 LOG("CA bundle: %{public}s", caPath.UTF8String);
             } else {
                 LOG("WARNING: cacert.pem missing from bundle — HTTPS cert verification will fail");
@@ -591,7 +591,7 @@ static void *wine_process_thread(void *arg) {
         // and the guest program's printf are both captured.
         {
             NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-            NSString *logPath2 = [docs stringByAppendingPathComponent:@"mythic-log.txt"];
+            NSString *logPath2 = [docs stringByAppendingPathComponent:@"madeira-log.txt"];
             int logfd = open(logPath2.UTF8String, O_WRONLY | O_CREAT | O_APPEND, 0644);
             if (logfd >= 0) {
                 dup2(logfd, STDERR_FILENO);
@@ -601,23 +601,23 @@ static void *wine_process_thread(void *arg) {
         }
 
         // Pick which exe to run (env var override, default = cube.exe).
-        // Set MYTHIC_EXE=hello-x64.exe in env to launch the ARM64EC test path.
-        const char *mythic_exe = getenv("MYTHIC_EXE");
-        if (!mythic_exe || !*mythic_exe) mythic_exe = "cube.exe";
+        // Set MADEIRA_EXE=hello-x64.exe in env to launch the ARM64EC test path.
+        const char *madeira_exe = getenv("MADEIRA_EXE");
+        if (!madeira_exe || !*madeira_exe) madeira_exe = "cube.exe";
         // Heuristic: x86_64 guest exes (cube-x64, hello-x64, real games like
         // Thumper) need the arm64ec-windows bundle (ARM64EC hybrid system
         // DLLs that interop with FEX-translated x86_64 code). ARM64-native
         // tests (cube.exe) use the aarch64-windows bundle.
-        // MYTHIC_USE_ARM64EC=1 forces the arm64ec path explicitly.
+        // MADEIRA_USE_ARM64EC=1 forces the arm64ec path explicitly.
         // Otherwise: detect "x64" in the exe name (cube-x64, fib-x64, etc.)
         // OR a Win32 full path (real game launches typically need ARM64EC).
-        const char *force_ec = getenv("MYTHIC_USE_ARM64EC");
+        const char *force_ec = getenv("MADEIRA_USE_ARM64EC");
         BOOL use_arm64ec = (force_ec && *force_ec == '1') ||
-                           (strstr(mythic_exe, "x64") != NULL) ||
-                           (strchr(mythic_exe, '\\') != NULL);
+                           (strstr(madeira_exe, "x64") != NULL) ||
+                           (strchr(madeira_exe, '\\') != NULL);
         const char *bundle_subdir = use_arm64ec ? "arm64ec-windows" : "aarch64-windows";
-        LOG("Target exe: %{public}s (bundle=%{public}s)", mythic_exe, bundle_subdir);
-        dprintf(STDERR_FILENO, "[WineProc] Target exe: %s (bundle=%s)\n", mythic_exe, bundle_subdir);
+        LOG("Target exe: %{public}s (bundle=%{public}s)", madeira_exe, bundle_subdir);
+        dprintf(STDERR_FILENO, "[WineProc] Target exe: %s (bundle=%s)\n", madeira_exe, bundle_subdir);
 
         // Ensure Wine prefix has system32 directory with DLLs from bundle
         {
@@ -710,7 +710,7 @@ static void *wine_process_thread(void *arg) {
              * MACHINE's home directory.
              *
              * prefix-template.tar.gz contains six absolute links --
-             *   drive_c/users/mythic/Documents -> /Users/willfaust/Documents
+             *   drive_c/users/madeira/Documents -> /Users/willfaust/Documents
              * and the same for Desktop, Downloads, Music, Pictures, Videos. That path
              * exists on no device, so every one of them is dangling everywhere the app has
              * ever been installed, including testers' phones. Anything resolving a Windows
@@ -736,7 +736,7 @@ static void *wine_process_thread(void *arg) {
                 int repaired = 0, already = 0;
                 for (int i = 0; i < 6; i++) {
                     NSString *sp = [prefix stringByAppendingPathComponent:
-                        [NSString stringWithFormat:@"drive_c/users/mythic/%s", shell_dirs[i]]];
+                        [NSString stringWithFormat:@"drive_c/users/madeira/%s", shell_dirs[i]]];
                     const char *cp = sp.fileSystemRepresentation;
                     struct stat lst;
                     if (lstat(cp, &lst) != 0) {          /* nothing there at all */
@@ -822,25 +822,25 @@ static void *wine_process_thread(void *arg) {
         }
 
         // Build the launch path for Wine's PE loader.
-        // If MYTHIC_EXE contains a backslash or starts with a drive letter
+        // If MADEIRA_EXE contains a backslash or starts with a drive letter
         // (e.g. "C:\\Program Files\\Thumper\\THUMPER_win10.exe"), use it
         // as-is. Otherwise treat it as a bare exe name in system32 (legacy
         // path used by cube/fib/hello tests).
         char exe_path[512];
-        if (strchr(mythic_exe, '\\') || (mythic_exe[0] && mythic_exe[1] == ':')) {
-            snprintf(exe_path, sizeof(exe_path), "%s", mythic_exe);
+        if (strchr(madeira_exe, '\\') || (madeira_exe[0] && madeira_exe[1] == ':')) {
+            snprintf(exe_path, sizeof(exe_path), "%s", madeira_exe);
         } else {
-            snprintf(exe_path, sizeof(exe_path), "C:\\windows\\system32\\%s", mythic_exe);
+            snprintf(exe_path, sizeof(exe_path), "C:\\windows\\system32\\%s", madeira_exe);
         }
 
-        // Optional MYTHIC_ARGS env var: space-separated args appended to argv.
+        // Optional MADEIRA_ARGS env var: space-separated args appended to argv.
         // Tokenized in-place; max 16 extra tokens.
         static char args_buf[1024];
         char *extra_argv[16] = {0};
         int extra_argc = 0;
-        const char *mythic_args = getenv("MYTHIC_ARGS");
-        if (mythic_args && *mythic_args) {
-            strncpy(args_buf, mythic_args, sizeof(args_buf) - 1);
+        const char *madeira_args = getenv("MADEIRA_ARGS");
+        if (madeira_args && *madeira_args) {
+            strncpy(args_buf, madeira_args, sizeof(args_buf) - 1);
             args_buf[sizeof(args_buf) - 1] = 0;
             char *saveptr = NULL;
             for (char *tok = strtok_r(args_buf, " ", &saveptr);
@@ -861,20 +861,20 @@ static void *wine_process_thread(void *arg) {
             dprintf(STDERR_FILENO, "[WineProc] argv[%d] = %s\n", 2 + i, extra_argv[i]);
         }
 
-        /* iOS-Mythic: chdir to the unix path that maps to the exe's Wine
+        /* iOS-Madeira: chdir to the unix path that maps to the exe's Wine
          * directory BEFORE __wine_main. Wine inherits the iOS app sandbox
          * cwd, which becomes a `unix\private\var\mobile\...\Documents\wine\`
          * Wine path — and Thumper's relative cache opens (e.g.,
          * "cache/721e72f7.pc") then resolve to doubled paths that don't
          * exist. Per GPT diagnosis 2026-05-12. Only chdir for full-path EXE
          * launches; bare-name launches (cube, hello-x64) use C:\windows\system32. */
-        if (strchr(mythic_exe, '\\') || (mythic_exe[0] && mythic_exe[1] == ':')) {
+        if (strchr(madeira_exe, '\\') || (madeira_exe[0] && madeira_exe[1] == ':')) {
             /* Convert "C:\Program Files\Thumper\X.exe" → unix path */
             char unix_dir[1024];
             const char *drive_c = "drive_c";
-            const char *after_drive = mythic_exe + 3; /* skip "C:\" */
-            char *last_sep = strrchr(mythic_exe, '\\');
-            if (last_sep && last_sep > mythic_exe + 3) {
+            const char *after_drive = madeira_exe + 3; /* skip "C:\" */
+            char *last_sep = strrchr(madeira_exe, '\\');
+            if (last_sep && last_sep > madeira_exe + 3) {
                 /* Get "Program Files\Thumper" from "C:\Program Files\Thumper\X.exe" */
                 size_t dir_len = (size_t)(last_sep - after_drive);
                 char windir[512];
@@ -890,18 +890,18 @@ static void *wine_process_thread(void *arg) {
                  * get_initial_directory bypasses unix_to_nt_file_name (which
                  * fails to resolve drive_c via dosdevices on iOS). */
                 char wine_cwd[768];
-                /* Strip trailing exe name from mythic_exe to get the dir part */
+                /* Strip trailing exe name from madeira_exe to get the dir part */
                 {
-                    const char *exe = mythic_exe;
+                    const char *exe = madeira_exe;
                     size_t dir_len = (size_t)(last_sep - exe);
                     if (dir_len < sizeof(wine_cwd) - 2) {
                         memcpy(wine_cwd, exe, dir_len);
                         wine_cwd[dir_len] = '\\';
                         wine_cwd[dir_len + 1] = 0;
-                        setenv("MYTHIC_INITIAL_CWD", wine_cwd, 1);
+                        setenv("MADEIRA_INITIAL_CWD", wine_cwd, 1);
                     }
                 }
-                dprintf(STDERR_FILENO, "[WineProc] chdir(%s) = %d errno=%d, PWD + MYTHIC_INITIAL_CWD=%s\n",
+                dprintf(STDERR_FILENO, "[WineProc] chdir(%s) = %d errno=%d, PWD + MADEIRA_INITIAL_CWD=%s\n",
                         unix_dir, rc, rc ? errno : 0, wine_cwd);
             }
         }
@@ -1001,10 +1001,10 @@ int wine_process_is_running(void) {
     return g_wine_running;
 }
 
-int mythic_write_continue_flag(void) {
+int madeira_write_continue_flag(void) {
     if (!g_prefix_path) return -1;
     char path[1024];
-    snprintf(path, sizeof(path), "%s/drive_c/mythic-continue.flag", g_prefix_path);
+    snprintf(path, sizeof(path), "%s/drive_c/madeira-continue.flag", g_prefix_path);
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
         LOG("continue flag write FAILED: %{public}s errno=%d", path, errno);

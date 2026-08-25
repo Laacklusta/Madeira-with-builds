@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build proc-test.exe + child-test.exe (aarch64-windows console PEs) and
 # copy them into the app bundle. Launch on device with
-# MYTHIC_EXE=proc-test.exe (the "Run Proc Test" button).
+# MADEIRA_EXE=proc-test.exe (the "Run Proc Test" button).
 set -eu
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -13,7 +13,7 @@ MINGW="$REPO_ROOT/toolchains/llvm-mingw-20260421-ucrt-macos-universal/bin"
 "$MINGW/aarch64-w64-mingw32-clang" -O2 -mconsole \
     -o "$DIR/child-test.exe" "$DIR/proc_child.c"
 
-cp "$DIR/proc-test.exe" "$DIR/child-test.exe" "$REPO_ROOT/app/Mythic/aarch64-windows/"
+cp "$DIR/proc-test.exe" "$DIR/child-test.exe" "$REPO_ROOT/app/Madeira/aarch64-windows/"
 echo "built + copied proc-test.exe child-test.exe"
-ls -la "$REPO_ROOT/app/Mythic/aarch64-windows/proc-test.exe" \
-       "$REPO_ROOT/app/Mythic/aarch64-windows/child-test.exe"
+ls -la "$REPO_ROOT/app/Madeira/aarch64-windows/proc-test.exe" \
+       "$REPO_ROOT/app/Madeira/aarch64-windows/child-test.exe"

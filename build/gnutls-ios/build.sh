@@ -4,7 +4,7 @@
 #
 # Consumers: Wine's bcrypt/secur32(schannel)/crypt32 unixlibs, compiled
 # into libntdll_unix.a. Those normally dlopen libgnutls at runtime; on
-# iOS we link these .a files into Mythic.app and resolve symbols through
+# iOS we link these .a files into Madeira.app and resolve symbols through
 # a generated table (see build/crypto-unix/).
 #
 # Notes:

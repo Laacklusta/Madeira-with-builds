@@ -1,9 +1,9 @@
 /*
- * audio_null_ios.c — minimal Wine audio "null" driver for iOS Mythic.
+ * audio_null_ios.c — minimal Wine audio "null" driver for iOS Madeira.
  *
  * Wine's mmdevapi loads a `wine<name>.drv` PE plus a unix-side function
  * table (37 entries). On Linux/macOS the unix table is a separate .so.
- * On iOS we statically link the table into Mythic.app — this file is
+ * On iOS we statically link the table into Madeira.app — this file is
  * that table for "ios" / "coreaudio".
  *
  * Behaviour: ONE fake render endpoint, accepts buffer submissions and

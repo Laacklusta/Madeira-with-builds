@@ -532,7 +532,7 @@ static inline unsigned int wait_reply( struct __server_request_info *req )
 }
 
 
-/* iOS-Mythic 2026-07-05: per-present frame-anatomy counters, read by
+/* iOS-Madeira 2026-07-05: per-present frame-anatomy counters, read by
  * winemetal_unix's Present-cadence log line (same binary). The wait
  * accounting is gated to the GAME thread (main Wine thread, captured in
  * server_init_process_done) so FMOD/worker threads blocking forever in
@@ -555,7 +555,7 @@ unsigned int server_call_unlocked( void *req_ptr )
 
     ios_srv_req_count++;
     if ((ret = send_request( req ))) return ret;
-    /* iOS-Mythic 2026-07-05: kick the in-process server loop out of its
+    /* iOS-Madeira 2026-07-05: kick the in-process server loop out of its
      * tick sleep so the request is picked up in ~50us instead of waiting
      * for the next 1ms iteration (fd_ios.c ios_srv_wake_sem). */
     {
@@ -2638,7 +2638,7 @@ void server_init_process_done(void)
     FILE_FS_DEVICE_INFORMATION info;
     struct ntdll_thread_data *thread_data = ntdll_get_thread_data();
 
-    /* iOS-Mythic: this runs on the main (game) thread exactly once —
+    /* iOS-Madeira: this runs on the main (game) thread exactly once —
      * capture its TEB for the server_wait frame-anatomy accounting. */
     {
         extern uintptr_t ios_srv_game_teb;
@@ -2769,7 +2769,7 @@ void server_init_process_done(void)
                 dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{ sample_thread(2); });
         }
 
-        /* iOS-Mythic 2026-07-03 sampling profiler for the 30 FPS hunt.
+        /* iOS-Madeira 2026-07-03 sampling profiler for the 30 FPS hunt.
          * Every prior frame-cost theory (L1 misses, drawable stalls, DXMT
          * encode) was eliminated by measurement; this samples the game
          * thread's PC at ~500Hz forever and prints a 256-byte-bucket
@@ -2778,12 +2778,12 @@ void server_init_process_done(void)
          * (unix side), or elsewhere — mapping the hot buckets tells us
          * where the ~1.4s/frame actually goes. Counts halve at each print
          * so the histogram tracks the current phase. */
-        if (!getenv("MYTHIC_QUIET"))
+        if (!getenv("MADEIRA_QUIET"))
         {
-            /* iOS-Mythic 2026-07-05 quiet mode: the sampler thread_suspends
+            /* iOS-Madeira 2026-07-05 quiet mode: the sampler thread_suspends
              * the game thread ~500x/s (each suspend+get_state+resume steals
              * wall time and adds jitter) — a few %% of frame time plus heat,
-             * and heat is what caps ProMotion at 60. MYTHIC_QUIET (set in
+             * and heat is what caps ProMotion at 60. MADEIRA_QUIET (set in
              * WineProcessBridge.m) skips the profiler entirely; comment the
              * setenv out for diagnostic sessions. */
             pthread_t prof_pthread = pthread_self();
@@ -3183,7 +3183,7 @@ NTSTATUS WINAPI NtClose( HANDLE handle )
     if (ret != STATUS_INVALID_HANDLE || !handle) return ret;
 
 #ifdef WINE_IOS
-    /* iOS-Mythic ml669: [bad-close] — Book of the Dead died on an UNHANDLED
+    /* iOS-Madeira ml669: [bad-close] — Book of the Dead died on an UNHANDLED
      * c0000008 (STATUS_INVALID_HANDLE) at KiRaiseUserExceptionDispatcher, and
      * this is the only path that reaches that dispatcher.
      *

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build DXMT winemetal unix side + airconv + dxbc_parser as iOS-aarch64
-# static library, for linking into Mythic.app.
+# static library, for linking into Madeira.app.
 #
 # Produces: libdxmt_unix.a
 set -eu

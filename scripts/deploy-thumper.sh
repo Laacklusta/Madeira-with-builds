@@ -1,5 +1,5 @@
 #!/bin/bash
-# Push Thumper game directory to the iPhone's Mythic.app Documents container.
+# Push Thumper game directory to the iPhone's Madeira.app Documents container.
 # Game ends up at C:\Program Files\Thumper\ from Wine's perspective
 # (Documents/wine/drive_c/Program Files/Thumper/ on the device filesystem).
 #
@@ -8,7 +8,7 @@
 set -eu
 
 DEVICE_ID="00008110-000568DA2EDA801E"
-BUNDLE_ID="com.mythic.emulator"
+BUNDLE_ID="com.madeira.emulator"
 SRC_DIR="/Users/willfaust/Documents/ios-pc-game-claude/research/Games/Thumper"
 DST_PATH='Documents/wine/drive_c/Program Files/Thumper'
 
@@ -24,7 +24,7 @@ echo ""
 # devicectl copy doesn't auto-create parent dirs; create them by pushing
 # a placeholder first if needed. Instead, the simplest reliable approach is
 # to push the entire Thumper folder under "Program Files/" — the parent
-# "wine/drive_c/Program Files/" should already exist after first Mythic
+# "wine/drive_c/Program Files/" should already exist after first Madeira
 # launch (the prefix extractor creates drive_c/ and standard subdirs).
 #
 # devicectl behaves like cp -R when the source is a directory.
@@ -39,4 +39,4 @@ xcrun devicectl device copy to \
     2>&1 | tail -20
 
 echo ""
-echo "==> Done. Tap 'Run Thumper (D3D11 / win10)' in the Mythic app to launch."
+echo "==> Done. Tap 'Run Thumper (D3D11 / win10)' in the Madeira app to launch."

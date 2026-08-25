@@ -473,7 +473,7 @@ static BOOL init_window_call_params( struct win_proc_params *params, HWND hwnd, 
      * Log func + resolved procW for the first few calls per process. */
     {
         static int wp_cnt;
-        if (getenv("MYTHIC_DESKTOP") && wp_cnt++ < 30)
+        if (getenv("MADEIRA_DESKTOP") && wp_cnt++ < 30)
         {
             struct win_proc_params tmp = { .func = params->func, .ansi = ansi };
             get_winproc_params( &tmp, TRUE );
@@ -3371,7 +3371,7 @@ static BOOL process_driver_events( UINT events_mask, UINT wake_mask, UINT change
     {
         BOOL skip_server = FALSE;
 #ifdef WINE_IOS
-        /* iOS-Mythic 2026-07-04: pure polls (wake==changed==0 and nothing
+        /* iOS-Madeira 2026-07-04: pure polls (wake==changed==0 and nothing
          * drained — e.g. GetAsyncKeyState's check_for_events) don't need
          * the server to learn our masks; only real msg-waits do. Thumper
          * polls input at kHz and EVERY poll was taking this set_queue_mask
@@ -3493,7 +3493,7 @@ static DWORD wait_message( DWORD count, const HANDLE *handles, DWORD timeout, DW
         static int ios_slice = -1;
         if (ios_slice < 0)
         {
-            const char *d = getenv( "MYTHIC_DESKTOP" );
+            const char *d = getenv( "MADEIRA_DESKTOP" );
             ios_slice = (d && *d == '1');
         }
         if (!ios_slice)

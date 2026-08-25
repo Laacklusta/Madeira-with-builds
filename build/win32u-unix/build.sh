@@ -15,7 +15,7 @@ WINE_BUILD="$WINE_SRC/build-macos"
 NTDLL_SHIMS="$REPO_ROOT/build/ntdll-unix/shims"
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 OBJ_DIR="$BUILD_DIR/obj"
-APP_LIB="$REPO_ROOT/app/Mythic/libwin32u_unix.a"
+APP_LIB="$REPO_ROOT/app/Madeira/libwin32u_unix.a"
 
 mkdir -p "$OBJ_DIR"
 

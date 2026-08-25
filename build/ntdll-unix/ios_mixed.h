@@ -8,8 +8,8 @@
  * session globals. loader_ios.c owns the registry; signal_arm64_ios.c
  * consumes it via ios_cur_ntdll_funcs() (NULL → use the p* globals).
  */
-#ifndef __MYTHIC_IOS_MIXED_H
-#define __MYTHIC_IOS_MIXED_H
+#ifndef __MADEIRA_IOS_MIXED_H
+#define __MADEIRA_IOS_MIXED_H
 
 struct ios_ntdll_funcs
 {
@@ -26,4 +26,4 @@ struct ios_ntdll_funcs
 /* Current thread's pseudo-process ntdll funcs; NULL = session ntdll. */
 extern const struct ios_ntdll_funcs *ios_cur_ntdll_funcs(void);
 
-#endif /* __MYTHIC_IOS_MIXED_H */
+#endif /* __MADEIRA_IOS_MIXED_H */

@@ -6,7 +6,7 @@ index c6021dde98f..d69bf94351a 100644
  #pragma makedep unix
  #endif
  
-+#include <unistd.h>   /* iOS-Mythic ml506: dprintf for the blit census */
++#include <unistd.h>   /* iOS-Madeira ml506: dprintf for the blit census */
  #include <stdarg.h>
  #include <limits.h>
  #include <math.h>
@@ -14,7 +14,7 @@ index c6021dde98f..d69bf94351a 100644
          }
          ret = !get_vis_rectangles( dcDst, &dst, dcSrc, &src );
  
-+        /* iOS-Mythic ml506: blit census.
++        /* iOS-Madeira ml506: blit census.
 +         *
 +         * The Steam login surface contains DUPLICATED 256x256 tiles — the
 +         * same tile content composited into two different slots, with other
@@ -57,7 +57,7 @@ index 8a0d064cd90..87539ae47ff 100644
  #pragma makedep unix
  #endif
  
-+#include <unistd.h>   /* iOS-Mythic ml507 */
++#include <unistd.h>   /* iOS-Madeira ml507 */
  #include <stdarg.h>
  #include <stdlib.h>
  #include <string.h>
@@ -65,7 +65,7 @@ index 8a0d064cd90..87539ae47ff 100644
                                         const void *bits, const BITMAPINFO *bmi, UINT coloruse,
                                         DWORD rop, UINT max_info, UINT max_bits, HANDLE xform )
  {
-+    /* iOS-Mythic ml507: the ml506 census watched NtGdiBitBlt/StretchBlt and
++    /* iOS-Madeira ml507: the ml506 census watched NtGdiBitBlt/StretchBlt and
 +     * caught only 480x400 VGUI sprite blits — not one full-window paint,
 +     * though the CEF window presented hundreds of times. So Chromium reaches
 +     * the window through a DIB-to-device path instead. Cover those too.
@@ -87,7 +87,7 @@ index 8a0d064cd90..87539ae47ff 100644
                                             UINT coloruse, UINT max_bits, UINT max_info,
                                             BOOL xform_coords, HANDLE xform )
  {
-+    /* iOS-Mythic ml507: see StretchDIBits above. */
++    /* iOS-Madeira ml507: see StretchDIBits above. */
 +    {
 +        static unsigned n_setdib;
 +        unsigned n = ++n_setdib;
@@ -109,7 +109,7 @@ index 0a6916d1651..3e4f1430da9 100644
  #pragma makedep unix
  #endif
  
-+#include <unistd.h>   /* iOS-Mythic ml508 */
++#include <unistd.h>   /* iOS-Madeira ml508 */
  #include <assert.h>
  
  #include "ntgdi_private.h"
@@ -117,7 +117,7 @@ index 0a6916d1651..3e4f1430da9 100644
                         const struct gdi_image_bits *bits, struct bitblt_coords *src,
                         struct bitblt_coords *dst, DWORD rop )
  {
-+    /* iOS-Mythic ml508: the real pixel-landing choke point.
++    /* iOS-Madeira ml508: the real pixel-landing choke point.
 +     *
 +     * ml506/ml507 eliminated FOUR entry points — NtGdiBitBlt, StretchBlt,
 +     * StretchDIBits and SetDIBitsToDevice never carry a window-sized paint
@@ -135,7 +135,7 @@ index 0a6916d1651..3e4f1430da9 100644
 +     * `bits->ptr` is the buffer Chromium composited into and hands us — the
 +     * one that already carries the displaced panel. Watching it names the
 +     * GUEST code that wrote each region. Only the big paint qualifies; the
-+     * watch itself is one-shot and env-gated (MYTHIC_SRCWATCH). */
++     * watch itself is one-shot and env-gated (MADEIRA_SRCWATCH). */
 +    if (dst && bits && bits->ptr && dst->visrect.right - dst->visrect.left >= 640
 +        && dst->visrect.bottom - dst->visrect.top >= 400)
 +    {

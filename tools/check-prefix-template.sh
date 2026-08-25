@@ -2,7 +2,7 @@
 # ml719: reject a prefix template containing absolute host symlinks.
 #
 # prefix-template.tar.gz shipped six links into the BUILD MACHINE's home
-# (drive_c/users/mythic/Documents -> /Users/willfaust/Documents, and the same for
+# (drive_c/users/madeira/Documents -> /Users/willfaust/Documents, and the same for
 # Desktop/Downloads/Music/Pictures/Videos). They dangle on every device, so every
 # Windows shell-folder lookup silently failed -- which is why no game that writes to
 # My Documents could produce a log. It shipped unnoticed because nothing we tested
@@ -10,7 +10,7 @@
 #
 # Run from the repo root. Exit 1 makes the offending archive impossible to ship.
 set -e
-ARCHIVE="${1:-app/Mythic/prefix-template.tar.gz}"
+ARCHIVE="${1:-app/Madeira/prefix-template.tar.gz}"
 [ -f "$ARCHIVE" ] || { echo "check-prefix-template: no such archive: $ARCHIVE" >&2; exit 1; }
 
 BAD=$(tar tzvf "$ARCHIVE" 2>/dev/null | awk '/^l/ { for (i=1;i<=NF;i++) if ($i=="->") { print $(i+1); break } }' \

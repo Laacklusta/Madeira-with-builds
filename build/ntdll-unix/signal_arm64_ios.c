@@ -40,7 +40,7 @@
 #include <dlfcn.h>
 #include <mach/mach.h>
 
-/* iOS-Mythic ml674: XZR/WZR AS A STORE SOURCE MUST READ ZERO.
+/* iOS-Madeira ml674: XZR/WZR AS A STORE SOURCE MUST READ ZERO.
  *
  * arm_thread_state64_t is  __uint64_t __x[29]  followed by __fp, __lr, __sp --
  * so state.__x[31] is not out of bounds by accident, it lands EXACTLY on __sp.
@@ -117,7 +117,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(seh);
 
 /* ml649: runtime diagnostic switch, defined in virtual_ios.c. Default OFF.
  * Gate the WORK, not the print — several probes do expensive reads first. */
-extern volatile int mythic_diag_enabled;
+extern volatile int madeira_diag_enabled;
 
 
 /* ml648: defined in virtual_ios.c, called from the SWPAL emulation path. */
@@ -362,7 +362,7 @@ static volatile unsigned ios_wx_repromotes;
  * paths that can never exist (a container path with no UUID, and a CWD-relative
  * name), so it silently forced ENABLED on every run and the "disable it and
  * retest" A/B I offered was not actually possible. An env var reaches this
- * native side -- proven by MYTHIC_NO_DFE in ml597/598. */
+ * native side -- proven by MADEIRA_NO_DFE in ml597/598. */
 int ios_wx_enabled( void )
 {
     static int v = -1;
@@ -373,13 +373,13 @@ int ios_wx_enabled( void )
          * crashes in two builds; silent corruption on a fresh install would be
          * worse than a clean crash, and a kill switch a user must discover
          * afterward is not a substitute for a safe default. Opt in with
-         * Documents/mythic-wx.txt containing 1.
+         * Documents/madeira-wx.txt containing 1.
          *
          * Native code reads ONLY this env value -- Swift owns the sandbox path
          * so that knowledge is not duplicated in two places. */
-        const char *e = getenv( "MYTHIC_WX" );
+        const char *e = getenv( "MADEIRA_WX" );
         v = (e && e[0] == '1') ? 1 : 0;
-        dprintf( STDERR_FILENO, "[wx] ml695 MYTHIC_WX=%s -> W^X %s (experimental, opt-in; threshold 32, %d slots)\n",
+        dprintf( STDERR_FILENO, "[wx] ml695 MADEIRA_WX=%s -> W^X %s (experimental, opt-in; threshold 32, %d slots)\n",
                  e ? e : "(unset)", v ? "ENABLED" : "DISABLED", IOS_WX_MAX );
     }
     return v;
@@ -501,8 +501,8 @@ static void *ios_stale_va_scanner( void *arg )
      * consumers need PE VAs for identity/range comparisons — can't be
      * touched. Import slots hold nothing but call targets; rewriting
      * them is the same transform the NtProtect-time IAT-sync applies.
-     * MYTHIC_NO_HEAL=1 reverts to dry-run reporting. */
-    int do_heal = getenv( "MYTHIC_NO_HEAL" ) == NULL;
+     * MADEIRA_NO_HEAL=1 reverts to dry-run reporting. */
+    int do_heal = getenv( "MADEIRA_NO_HEAL" ) == NULL;
     pthread_setname_np( "wine-stale-heal" );
     for (;;)
     {
@@ -514,7 +514,7 @@ static void *ios_stale_va_scanner( void *arg )
             if (do_heal)
                 ios_jit_patch_stale_pointer( va );
             else
-                fprintf( stderr, "[stale-heal] (dry-run) hot stale VA 0x%llx — heal skipped (MYTHIC_NO_HEAL set)\n",
+                fprintf( stderr, "[stale-heal] (dry-run) hot stale VA 0x%llx — heal skipped (MADEIRA_NO_HEAL set)\n",
                          (unsigned long long)va );
         }
     }
@@ -665,7 +665,7 @@ static void ios_lock_census(void)
     int i, s;
     if (count > IOS_MAX_WINE_THREADS) count = IOS_MAX_WINE_THREADS;
 
-    /* iOS-Mythic ml414 (#60): the CodeInvalidationMutex read-holder is alive
+    /* iOS-Madeira ml414 (#60): the CodeInvalidationMutex read-holder is alive
      * somewhere — xtajit64 stamps TEB+0x16f8 (Instrumentation[8]) with the
      * mutex address while the shared lock is held (CompileCode).  ml414 proved
      * the leaker neither pthread_exits ([exit-hold] 0) nor gets a guest
@@ -1116,7 +1116,7 @@ typedef struct {
 } ios_exc_reply_t;
 #pragma pack()
 
-/* iOS-Mythic ml329 (#53 discriminator): ring of pages the reclaim-recovery path
+/* iOS-Madeira ml329 (#53 discriminator): ring of pages the reclaim-recovery path
  * zero-filled. Written by the recovery site, dumped by ios_reclaim_pages_report()
  * from the fatal-SEGV path so "did iOS eat this allocator's memory?" is answered
  * from recorded fact rather than inferred from Wine's vprot (which reads 0 for
@@ -1227,7 +1227,7 @@ static void *ios_mach_exception_thread( void *arg )
                     n, ns / 1000000ull, ns / n, ios_store_fault_dropped);
             }
         }
-        if (mythic_diag_enabled && (ios_exc_msg_count & 0xFFF) == 0)
+        if (madeira_diag_enabled && (ios_exc_msg_count & 0xFFF) == 0)
         {
             arm_thread_state64_t pstate;
             mach_msg_type_number_t pcount = ARM_THREAD_STATE64_COUNT;
@@ -1259,7 +1259,7 @@ static void *ios_mach_exception_thread( void *arg )
          * We now own the mask and decline (handled stays 0 => KERN_FAILURE),
          * which escalates to the host default => BSD SIGTRAP => trap_handler,
          * where the 0xf00d and generic-trap cases already live. That is the
-         * same end state mythic-jit.js produced with forwardSignal(), minus the
+         * same end state madeira-jit.js produced with forwardSignal(), minus the
          * round-trip to a starved debugger.
          *
          * Bounded so a suspend-check storm cannot flood the log, but the FIRST
@@ -1599,7 +1599,7 @@ static void *ios_mach_exception_thread( void *arg )
                                         "[int3-guest]   ASCII x%d = \"%s\"  <== text in a register\n", gi, a);
                         }
 
-                        /* iOS-Mythic ml616 [brp-contain]: WHICH PartitionAlloc callsite
+                        /* iOS-Madeira ml616 [brp-contain]: WHICH PartitionAlloc callsite
                          * asserted, and on WHAT value.
                          *
                          * Chromium's BackupRefPtr refcount assertion is `int3; int3; ud2`
@@ -1840,7 +1840,7 @@ static void *ios_mach_exception_thread( void *arg )
                         }
                         if (jit_pc == (void *)(uintptr_t)fault_pc)
                         {
-                            /* iOS-Mythic: if PC is in JIT pool RW alias range,
+                            /* iOS-Madeira: if PC is in JIT pool RW alias range,
                              * redirect to RX alias (= PC - pool_size). FEX's
                              * emitted code lives at RX alias addresses, but
                              * sometimes a BR/BLR computes the RW alias via
@@ -2211,7 +2211,7 @@ static void *ios_mach_exception_thread( void *arg )
                     int patched = 0;
                     int adjust_pc = 0;
 
-                    /* iOS-Mythic: gate the LDAR/STLR rewrite on the access
+                    /* iOS-Madeira: gate the LDAR/STLR rewrite on the access
                      * being ACTUALLY unaligned for its size. The Mach
                      * EXC_BAD_ACCESS we catch here also covers plain guest
                      * NULL-derefs (addr=0x0, 0x8, ...). Those are aligned and
@@ -2223,7 +2223,7 @@ static void *ios_mach_exception_thread( void *arg )
                         uint32_t access_size_lg2 = (insn >> 30) & 0x3;
                         uint64_t align_mask = (access_size_lg2 == 0) ? 0
                                             : ((1ULL << access_size_lg2) - 1);
-                        /* iOS-Mythic ml624 — BYTE ACCESSES MUST *ALWAYS* SKIP.
+                        /* iOS-Madeira ml624 — BYTE ACCESSES MUST *ALWAYS* SKIP.
                          *
                          * The comment above is correct: an 8-bit access can never be
                          * misaligned. But `if (align_mask && ...)` made byte the ONE size
@@ -2324,7 +2324,7 @@ static void *ios_mach_exception_thread( void *arg )
                         adjust_pc = -4;
                         patched = 1;
                     }
-                    /* iOS-Mythic ml431 (#71): misaligned EXCLUSIVE / CAS family.
+                    /* iOS-Madeira ml431 (#71): misaligned EXCLUSIVE / CAS family.
                      *
                      * ml430: Valve's IPCWrapper embeds a CRITICAL_SECTION at an
                      * odd offset inside a packed shm struct (legal on x86 —
@@ -2576,7 +2576,7 @@ static void *ios_mach_exception_thread( void *arg )
                      * STP q,q (pre/post-index variants): 0xAD8, 0xACC, etc.
                      * For now, emulate the family: top 7 bits = 0b1010110, bit 31:25 = 0x56,
                      * mask 0xFE000000 matches 0xAC000000 — covers 64/128-bit SIMD STP variants. */
-                    /* iOS-Mythic ml629: Q-PAIR STORES — ALL FOUR ADDRESSING MODES.
+                    /* iOS-Madeira ml629: Q-PAIR STORES — ALL FOUR ADDRESSING MODES.
                      *
                      * The previous test pinned bit23 to 0:
                      *     (insn & 0xFEC00000) == 0xAC000000 || == 0xAD000000
@@ -2975,7 +2975,7 @@ static void *ios_mach_exception_thread( void *arg )
                     }
                     
 
-                    /* iOS-Mythic ml626: SWP{A}{L}{B,H} — ATOMIC SWAP.
+                    /* iOS-Madeira ml626: SWP{A}{L}{B,H} — ATOMIC SWAP.
                      *
                      * Encoding (atomic memory operation, o3=1 opc=000):
                      *   size(2) 111 V=0 00 A R 1 Rs(5) o3=1 opc(3)=000 00 Rn(5) Rt(5)
@@ -3118,7 +3118,7 @@ static void *ios_mach_exception_thread( void *arg )
                              *
                              * Demote only after a page has faulted repeatedly, so
                              * one-off writes never change page state. Disable at
-                             * runtime with Documents/mythic-wx.txt containing 0. */
+                             * runtime with Documents/madeira-wx.txt containing 0. */
                             {
                                 /* ml693: BACK TO 32. ml691 proved threshold 32 safe over
                                  * 192 demotions with zero re-promotions; ml692 changed the
@@ -3447,7 +3447,7 @@ wx_done: ;
                                 __sync_lock_release(&fc_lock);
                             }
                         }
-                        if (mythic_diag_enabled && (ec <= 5 || (ec % 1000) == 0))
+                        if (madeira_diag_enabled && (ec <= 5 || (ec % 1000) == 0))
                         {   /* ml649: the readback below touches both aliases */
                             /* Verify dual-map sharing: read back via the RX
                              * (original) address and compare to what we wrote
@@ -3468,7 +3468,7 @@ wx_done: ;
                 }
             }
 
-            /* iOS-Mythic RECLAIM RECOVERY (FEX-2607 Thumper): a page that Wine/FEX
+            /* iOS-Madeira RECLAIM RECOVERY (FEX-2607 Thumper): a page that Wine/FEX
              * consider committed can be reclaimed by iOS under memory pressure —
              * 2607's per-thread 96MB LookupCaches push the app over the jetsam
              * limit, so committed L1/L2/code pages get dropped and the re-access
@@ -3688,7 +3688,7 @@ wx_done: ;
                                     (unsigned long long)(pg - mod_base), errno_save);
                         }
                         int reuse = madvise( (void *)(uintptr_t)pg, RR_PAGE, MADV_FREE_REUSE );
-                        /* iOS-Mythic ml329 (#53 DISCRIMINATOR): remember every page we
+                        /* iOS-Madeira ml329 (#53 DISCRIMINATOR): remember every page we
                          * zero-fill, so a later crash can be tested against them instead
                          * of inferred.
                          *
@@ -3743,7 +3743,7 @@ skip_reclaim_band: ;
                 /* Rate-limit: log first 5 unhandled faults then every 100th */
                 static volatile int unhandled_count = 0;
                 int cnt = __sync_add_and_fetch(&unhandled_count, 1);
-                /* iOS-Mythic: ALWAYS dump for "terminal-looking" faults
+                /* iOS-Madeira: ALWAYS dump for "terminal-looking" faults
                  * — fault PC outside any plausible mapped region (low addr
                  * < 0x100000000 OR in dyld_shared_cache range 0x3xxxx00000+).
                  * Path-init memcpy faults happen at JIT-pool PCs and burn
@@ -3752,7 +3752,7 @@ skip_reclaim_band: ;
                 uint64_t fault_pc_check = (uint64_t)__darwin_arm_thread_state64_get_pc(state);
                 int terminal_pc = (fault_pc_check < 0x100000000ULL ||
                                    (fault_pc_check >> 32) >= 0x300);
-                /* iOS-Mythic 2026-05-15: compact per-fault line + first-seen
+                /* iOS-Madeira 2026-05-15: compact per-fault line + first-seen
                  * guest RIP tracker. The Thumper fault loop has 13K+ UNHANDLED
                  * exceptions at JIT-pool PCs; the current cnt<=5 gate hides
                  * which guest function(s) the loop runs over. Capture State.RIP
@@ -4170,7 +4170,7 @@ skip_reclaim_band: ;
                             else
                                 dprintf( STDERR_FILENO, "[rsp-trunc]   x86 @rip UNREADABLE\n" );
 
-                            /* iOS-Mythic ml333: is the guest code we EXECUTE the guest code that was
+                            /* iOS-Madeira ml333: is the guest code we EXECUTE the guest code that was
                              * LOADED?
                              *
                              * ml332's fatal was c000001d with the bytes at guest RIP reading
@@ -4279,7 +4279,7 @@ skip_reclaim_band: ;
                         dprintf(STDERR_FILENO, "[mach_exc] insn_stream PC-12..PC+8: %08x %08x %08x [%08x] %08x %08x %08x\n",
                             p[-3], p[-2], p[-1], p[0], p[1], p[2], p[3]);
                     }
-                    /* iOS-Mythic: symbolize pc/lr via dladdr — works for
+                    /* iOS-Madeira: symbolize pc/lr via dladdr — works for
                      * dyld-cache addresses in-process. Names the native
                      * subsystem when a fault lands in system frameworks
                      * (e.g. the 2026-07-04 post-UNIXCALL-DIRECT crash at
@@ -4666,7 +4666,7 @@ skip_reclaim_band: ;
                         extern size_t ios_jit_pool_size_global;
                         if (ios_jit_rw_base_global && ios_jit_pool_size_global)
                         {
-                            const char *docs = getenv("MYTHIC_DOCS_DIR");
+                            const char *docs = getenv("MADEIRA_DOCS_DIR");
                             char path[512];
                             if (docs)
                                 snprintf(path, sizeof(path), "%s/fex-jit-dump.bin", docs);
@@ -4719,7 +4719,7 @@ skip_reclaim_band: ;
                         }
                     }
 
-                    /* iOS-Mythic: dump x86 STATE on the first few faults. FEX rarely
+                    /* iOS-Madeira: dump x86 STATE on the first few faults. FEX rarely
                      * spills RSP/RSI/RDI etc to State.gregs[] (they live in static
                      * ARM regs x23/x25/x26 and only get spilled at SpillStaticRegs
                      * call sites — which most of __dyn_tls_init's path never hits).
@@ -5151,7 +5151,7 @@ skip_reclaim_band: ;
  * A fault we DECLINE at thread level now escalates to this same port and is
  * declined again, after which the kernel falls through to the host default and
  * delivers a BSD signal so wine's sigaction handlers run — the same end state
- * mythic-jit.js was hand-rolling with forwardSignal(). */
+ * madeira-jit.js was hand-rolling with forwardSignal(). */
 static void ios_install_task_exception_port(void)
 {
     static int done = 0;
@@ -5167,11 +5167,11 @@ static void ios_install_task_exception_port(void)
     done = 1;
 
     /* Opt-out only: this strictly removes a dependency on a port we do not own,
-     * so it defaults ON. MYTHIC_TASK_EXC=0 restores the pre-ml522 behaviour for
+     * so it defaults ON. MADEIRA_TASK_EXC=0 restores the pre-ml522 behaviour for
      * a same-build A/B against the ~54s stall. */
-    if ((gate = getenv( "MYTHIC_TASK_EXC" )) && gate[0] == '0')
+    if ((gate = getenv( "MADEIRA_TASK_EXC" )) && gate[0] == '0')
     {
-        ERR("[task-exc] DISABLED by MYTHIC_TASK_EXC=0 — task port stays with the debugger, "
+        ERR("[task-exc] DISABLED by MADEIRA_TASK_EXC=0 — task port stays with the debugger, "
             "#67's ~54s dead-port stall is expected rev=ml522\n");
         return;
     }
@@ -5466,7 +5466,7 @@ NTSTATUS signal_set_full_context( CONTEXT *context )
     if (!status && (context->ContextFlags & CONTEXT_INTEGER) == CONTEXT_INTEGER)
         frame->restore_flags |= CONTEXT_INTEGER;
 
-    /* iOS-Mythic diag (Thumper desktop ILL): the crash pc is entered with no
+    /* iOS-Madeira diag (Thumper desktop ILL): the crash pc is entered with no
      * branch/register/immediate trail = a context restore. Log every resume
      * targeting the FEX tail-carve region (top 128MB of the pool) whose
      * first word is a data-word/NOP — plus the is_ec_code verdict, since
@@ -5488,7 +5488,7 @@ NTSTATUS signal_set_full_context( CONTEXT *context )
 
     if (ios_is_arm64ec_cur() && !is_ec_code( frame->pc ))   /* owner-aware (X3) */
     {
-        /* iOS-Mythic ml420 (#69, ml419 root cause): the EcCodeBitMap only covers
+        /* iOS-Madeira ml420 (#69, ml419 root cause): the EcCodeBitMap only covers
          * PE space (#52), so a resume targeting the JIT pool — FEX's
          * NtContinueNative after handling a fault host-side ("Handled unaligned
          * atomic"), with Pc = the faulting host instruction — fails is_ec_code
@@ -5559,7 +5559,7 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
 
     if (self && (flags & CONTEXT_DEBUG_REGISTERS)) self = FALSE;
 
-    /* iOS-Mythic diag: companion to [set-ctx] in signal_set_full_context —
+    /* iOS-Madeira diag: companion to [set-ctx] in signal_set_full_context —
      * catch cross-thread PC rewrites into the FEX tail carve that land on
      * data words (suspend/invalidate machinery redirecting threads). */
     if (flags & CONTEXT_CONTROL)
@@ -6216,7 +6216,7 @@ static int ios_mach_deliver_guest_exception_inner( thread_t thread, arm_thread_s
         thread_teb = (uintptr_t)teb;
     }
 
-    /* iOS-Mythic ml413 (#60/#66): xtajit64 stamps TEB->Instrumentation[8]
+    /* iOS-Madeira ml413 (#60/#66): xtajit64 stamps TEB->Instrumentation[8]
      * (+0x16f8) with the mutex address while a thread holds a FEX shared lock
      * (CodeInvalidationMutex read hold during CompileCode). Redirecting such a
      * thread to KiUserExceptionDispatcher abandons the compile without
@@ -6270,7 +6270,7 @@ static int ios_mach_deliver_guest_exception_inner( thread_t thread, arm_thread_s
         else rec.ExceptionInformation[0] = EXCEPTION_READ_FAULT;
         rec.ExceptionInformation[1] = fault_addr;
 
-        /* iOS-Mythic ml613 [av-detail]: THE THREE-WAY DISCRIMINATOR.
+        /* iOS-Madeira ml613 [av-detail]: THE THREE-WAY DISCRIMINATOR.
          *
          * ml612's fatal AV printed only ExceptionAddress, so read-vs-execute and
          * the actual faulting DATA address were both invisible — and a FEX
@@ -6339,7 +6339,7 @@ static int ios_mach_deliver_guest_exception_inner( thread_t thread, arm_thread_s
                              (fault_addr >= cbase && fault_addr < cbase + csize) ? 1 : 0 );
                 dprintf( 2, " regs=%d rev=ml613\n", have_regs );
 
-                /* iOS-Mythic ml619 [tree-caller]: NAME THE CORRUPTED CONTAINER.
+                /* iOS-Madeira ml619 [tree-caller]: NAME THE CORRUPTED CONTAINER.
                  *
                  * ml616/ml618 both died inside libc++'s recursive tree deleter for
                  * fextl::set<uint64_t> (libarm64ecfex+0x12fa0 and +0x12c10 — two
@@ -6506,7 +6506,7 @@ dispatch:
                  (unsigned long long)fault_addr, frame_addr, (void *)thread_teb, dispatcher );
     deliver_logs++;
 
-    /* iOS-Mythic ml461 (#76): identical-fault redelivery TERMINAL. A host-C++
+    /* iOS-Madeira ml461 (#76): identical-fault redelivery TERMINAL. A host-C++
      * fault misdelivered down the guest SEH path can never be handled — the
      * guest restores the context and refaults, forever. ml452 stormed 65k×,
      * ml459 70k×, ml460 326,500× (rpmalloc free-list bucket holding x86 code
@@ -6574,7 +6574,7 @@ dispatch:
         }
     }
 
-    /* iOS-Mythic ml422 (#70): a webhelper thread died STATUS_STACK_OVERFLOW
+    /* iOS-Madeira ml422 (#70): a webhelper thread died STATUS_STACK_OVERFLOW
      * right after the first CreateBrowser (ml421). Name the dying thread's
      * stack RESERVE so the verdict is direct: a Windows-sized (512KB/1MB)
      * stack overflowing = EC native-frame inflation → the ml422 4MB floor is
@@ -7178,7 +7178,7 @@ static int ios_make_wine_logging_safe( void )
     return 1;
 }
 
-/* iOS-Mythic ml481 (#85): is this fault FOREIGN — i.e. raised by a host
+/* iOS-Madeira ml481 (#85): is this fault FOREIGN — i.e. raised by a host
  * (Apple/SwiftUI/Metal) thread executing host code on host memory?
  *
  * ml480's freeze: the app's UI thread (port 0x103) was inside
@@ -7202,7 +7202,7 @@ static int ios_make_wine_logging_safe( void )
 /***********************************************************************
  *		ios_srcwatch — catch the guest code that writes Chromium's bitmap
  *
- * iOS-Mythic ml514. The render corruption is a per-draw-op DESTINATION
+ * iOS-Madeira ml514. The render corruption is a per-draw-op DESTINATION
  * error with a CONSTANT offset (~-550,-97): a panel written where it does
  * not belong with its true location left black, the QR halo displaced
  * independently of the QR it surrounds. Everything WE own is exonerated —
@@ -7286,10 +7286,10 @@ static struct {
  *              reads deliver 73/73 byte-perfect, so something writes to it
  *              afterwards)
  *
- * MYTHIC_SRCWATCH names which one to arm. "1" keeps the legacy render meaning. */
+ * MADEIRA_SRCWATCH names which one to arm. "1" keeps the legacy render meaning. */
 void ios_srcwatch_arm_for( const void *bits, unsigned long len, const char *tag )
 {
-    const char *want = getenv( "MYTHIC_SRCWATCH" );
+    const char *want = getenv( "MADEIRA_SRCWATCH" );
     uintptr_t b, e;
 
     /* ml531: the floor and the once-only guard were both tuned for the render
@@ -7354,7 +7354,7 @@ void ios_srcwatch_arm( const void *bits, unsigned long len )
  *  1. TARGETING. Arming the whole 1.2MB bitmap spreads a 400-attribution budget
  *     across ~76 pages, so the clear (which touches EVERY page first) dominates
  *     and the content painters — the writers that would name a displaced band —
- *     stay invisible. MYTHIC_SRCWATCH_ROWS=lo,hi restricts the watch to one
+ *     stay invisible. MADEIRA_SRCWATCH_ROWS=lo,hi restricts the watch to one
  *     horizontal band so the budget lands where displacement was measured.
  *  2. READABILITY. Storing stride lets a fault offset be reported as (x,y) and a
  *     tile column directly, instead of needing offline arithmetic to interpret.
@@ -7364,7 +7364,7 @@ void ios_srcwatch_arm( const void *bits, unsigned long len )
 void ios_srcwatch_arm_geom( const void *bits, unsigned long len,
                             unsigned w, unsigned h, unsigned stride )
 {
-    const char *rows = getenv( "MYTHIC_SRCWATCH_ROWS" );
+    const char *rows = getenv( "MADEIRA_SRCWATCH_ROWS" );
     unsigned long lo = 0, hi = h;
     const void *abits = bits;
     unsigned long alen = len;
@@ -8412,7 +8412,7 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
                         }
                     }
                 }
-                /* iOS-Mythic ml329 (#53 discriminator): on a NULL-ish deref -- the exact
+                /* iOS-Madeira ml329 (#53 discriminator): on a NULL-ish deref -- the exact
                  * shape of the IntrusivePooledAllocator crash (a list node read at
                  * offset 8 of a NULL `next`) -- state whether iOS zero-filled any page of
                  * FEX's host heap this run. Prints the verdict either way, so a run with
@@ -8780,7 +8780,7 @@ static void ill_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     if (ill_dbg_ok) ERR("ILL at pc=%p\n", (void*)PC_sig(context));
     else dprintf( 2, "ILL at pc=%p (no TEB — wine logging unsafe)\n", (void*)PC_sig(context) );
     {
-        /* iOS-Mythic diagnostic: when we ILL on a zero/empty page, dump full
+        /* iOS-Madeira diagnostic: when we ILL on a zero/empty page, dump full
          * register state + walk back FP chain to find who BR'd here. */
         uint64_t pc  = (uint64_t)PC_sig(context);
         uint64_t lr  = (uint64_t)REGn_sig(30, context);
@@ -8819,7 +8819,7 @@ static void ill_handler( int signal, siginfo_t *siginfo, void *sigcontext )
             if (prev_fp <= fp) break;
             fp = prev_fp;
         }
-        /* iOS-Mythic 2026-07-06 (Thumper desktop ILL): both crashes were the
+        /* iOS-Madeira 2026-07-06 (Thumper desktop ILL): both crashes were the
          * FEX dispatcher's ExitFunctionLinker thunk doing `ldr x2,[x28,#0x630];
          * blr x2` with a corrupted Pointers.ExitFunctionLink (pointed into a
          * mid-emission block tail instead of the C++ resolver). Dump the
@@ -8903,7 +8903,7 @@ static void ill_handler( int signal, siginfo_t *siginfo, void *sigcontext )
                         (unsigned long long)rec[4], (unsigned long long)rec[5]);
             }
         }
-        /* iOS-Mythic: also dump JIT pool here (the Mach UNHANDLED path may not
+        /* iOS-Madeira: also dump JIT pool here (the Mach UNHANDLED path may not
          * fire for ILL since we deliver via setup_exception). One-shot. */
         {
             static volatile int ill_dumped = 0;
@@ -8911,7 +8911,7 @@ static void ill_handler( int signal, siginfo_t *siginfo, void *sigcontext )
                 extern void *ios_jit_rw_base_global;
                 extern size_t ios_jit_pool_size_global;
                 if (ios_jit_rw_base_global && ios_jit_pool_size_global) {
-                    const char *docs = getenv("MYTHIC_DOCS_DIR");
+                    const char *docs = getenv("MADEIRA_DOCS_DIR");
                     char path[512];
                     if (docs) snprintf(path, sizeof(path), "%s/fex-jit-dump.bin", docs);
                     else      snprintf(path, sizeof(path), "/tmp/fex-jit-dump.bin");
@@ -9109,7 +9109,7 @@ static int ios_emulate_store(ucontext_t *ctx, uint32_t insn, uintptr_t rw_addr)
 /**********************************************************************
  *		ios_emulate_unaligned_guest_access
  *
- * iOS-Mythic ml479 (#83): emulate a PLAIN (non-atomic) misaligned
+ * iOS-Madeira ml479 (#83): emulate a PLAIN (non-atomic) misaligned
  * load/store IN PLACE via memcpy and return 1, or 0 if the form isn't
  * safely emulatable. Guest x86 MOVs may be arbitrarily misaligned and
  * MUST succeed; some guest regions (PA-band SM_COW pages, hit by the
@@ -9197,7 +9197,7 @@ static int ios_emulate_unaligned_guest_access(ucontext_t *ctx, uint32_t insn, ui
         return 1;
     }
 
-    /* iOS-Mythic ml593: STUR/LDUR Qt (128-bit SIMD, UNSCALED immediate)
+    /* iOS-Madeira ml593: STUR/LDUR Qt (128-bit SIMD, UNSCALED immediate)
      *   00 111 1 00 1x 0 imm9 00 Rn Rt   — 0x3c800000 (store) / 0x3cc00000 (load),
      *                                       bits[11:10] == 00 marks unscaled.
      *
@@ -9476,7 +9476,7 @@ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
                 insn, pc, siginfo->si_addr);
         }
 
-        /* 3. iOS-Mythic ml420 (#69, ml419 fatal chain): data fault with the
+        /* 3. iOS-Madeira ml420 (#69, ml419 fatal chain): data fault with the
          * TARGET outside the pool. Two previously-unhandled sub-cases died
          * insanely here:
          *
@@ -9867,7 +9867,7 @@ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
                     siginfo->si_addr, pc, (int)vrec.ExceptionInformation[0]);
                 goto bus_fatal;
             }
-            /* iOS-Mythic ml479 (#83): readable target + BUS_ADRALN — emulate
+            /* iOS-Madeira ml479 (#83): readable target + BUS_ADRALN — emulate
              * PLAIN loads/stores in place before concluding "alignment fault →
              * 80000002". The 80000002 path only helps ATOMICS (FEX's unaligned
              * backpatcher); the 2026-08-04 Steam client does misaligned plain
@@ -9922,7 +9922,7 @@ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     }
 
 bus_fatal:
-    /* iOS-Mythic ml612: IS THIS A FEX EMULATOR-STACK OVERFLOW? (items 2-4)
+    /* iOS-Madeira ml612: IS THIS A FEX EMULATOR-STACK OVERFLOW? (items 2-4)
      *
      * ml611 froze the whole app for 11 minutes because this exact fault was
      * classified as STATUS_DATATYPE_MISALIGNMENT. CrBrowserMain ran off the
@@ -9947,7 +9947,7 @@ bus_fatal:
      *
      * ⛔ Do NOT "fix" this by enlarging the emulator stack — that only postpones
      * a traversal that does not terminate. */
-    /* iOS-Mythic ml620 [tree-caller]: RUN THE RECURSIVE-CALLER SCAN ON THE *BUS* PATH.
+    /* iOS-Madeira ml620 [tree-caller]: RUN THE RECURSIVE-CALLER SCAN ON THE *BUS* PATH.
      *
      * ml619 put this scan in segv_handler and it never fired. The failure arrives
      * as SIGBUS, not SIGSEGV: ml619's thread death was
@@ -10328,7 +10328,7 @@ static void abrt_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 
 
 #ifdef WINE_IOS
-/* iOS-Mythic ml483 (#87): the thread-control handlers (SIGQUIT/USR1/USR2) all
+/* iOS-Madeira ml483 (#87): the thread-control handlers (SIGQUIT/USR1/USR2) all
  * reach ntdll_get_thread_data() — get_syscall_frame() reads TEB+0x378 and
  * is_inside_syscall() reads TEB+kernel_stack — on their FIRST statement, before
  * any check. Threads created directly by CEF/FEX have no TEB (NtCurrentTeb()
@@ -11218,7 +11218,7 @@ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
                    "cbnz w16, " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return") "\n\t"
                    __ASM_CFI_CFA_IS_AT2(sp, 0x98, 0x02) /* frame->syscall_cfa */
                    "ldp x18, x19, [sp, #0x90]\n\t"
-                   /* iOS-Mythic 2026-07-04: REMOVED `msr TPIDR_EL0, x18`
+                   /* iOS-Madeira 2026-07-04: REMOVED `msr TPIDR_EL0, x18`
                     * ("keep TPIDR_EL0 in sync"). Nothing of ours reads
                     * TPIDR_EL0 — every TEB recovery path (dispatchers, x18
                     * patcher trampolines, Mach handler) uses TPIDRRO_EL0 +
@@ -11786,7 +11786,7 @@ void ios_dump_all_thread_stacks(void)
             if (di.dli_fname) { img = strrchr(di.dli_fname, '/'); img = img ? img + 1 : di.dli_fname; }
             if (di.dli_sname) { sym = di.dli_sname; off = st.__pc - (uint64_t)(uintptr_t)di.dli_saddr; }
         }
-        /* iOS-Mythic ml417 (#68): a pc alone can't tell "blocked in a wait"
+        /* iOS-Madeira ml417 (#68): a pc alone can't tell "blocked in a wait"
          * from "stopped dead" from "spinning in a fault-retry loop".  ml417
          * showed FOUR threads (steam.exe's main among them, mid-DllMain of
          * steamclient64) sampled 37x at __wine_syscall_dispatcher+0xa8 —

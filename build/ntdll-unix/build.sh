@@ -7,7 +7,7 @@ WINE_SRC="$REPO_ROOT/wine"
 WINE_BUILD="$WINE_SRC/build-macos"
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 OBJ_DIR="$BUILD_DIR/obj"
-APP_LIB="$REPO_ROOT/app/Mythic/libntdll_unix.a"
+APP_LIB="$REPO_ROOT/app/Madeira/libntdll_unix.a"
 
 mkdir -p "$OBJ_DIR"
 
@@ -46,7 +46,7 @@ compile_one() {
     fi
 }
 
-# iOS-Mythic 2026-07-05 (Steam S0): compile a DLL's unix side into
+# iOS-Madeira 2026-07-05 (Steam S0): compile a DLL's unix side into
 # libntdll_unix.a. Args: src, obj-name, funcs-prefix, extra flags...
 # The __wine_unix_call_funcs tables are renamed per-lib (they'd collide
 # in one archive) and registered by name in virtual_ios.c's
@@ -83,12 +83,12 @@ compile_unixlib() {
 
 echo "=== Building ntdll unix (iOS) ==="
 
-# iOS-Mythic 2026-05-13: silent audio driver — provides a null
+# iOS-Madeira 2026-05-13: silent audio driver — provides a null
 # IAudioClock that advances at real time so FMOD's audio-gated rhythm
 # logic in Thumper et al. advances past intro music.
 compile_one "$BUILD_DIR/audio_null_ios.c" "audio_null_ios"
 
-# iOS-Mythic 2026-07-05 (Steam S0): network + crypto unix sides.
+# iOS-Madeira 2026-07-05 (Steam S0): network + crypto unix sides.
 echo "=== Building crypto/network unixlibs ==="
 "$CRYPTO_DIR/gen_gnutls_symtab.sh" > /dev/null
 compile_one "$CRYPTO_DIR/gnutls_symtab_ios.c" "gnutls_symtab_ios"
@@ -100,7 +100,7 @@ compile_unixlib "$WINE_SRC/dlls/bcrypt/gnutls.c" "bcrypt_unixlib" "bcrypt" \
 compile_unixlib "$WINE_SRC/dlls/secur32/schannel_gnutls.c" "secur32_unixlib" "secur32" \
     -I"$WINE_SRC/dlls/secur32" -I"$GNUTLS_PREFIX/include" \
     -include "$CRYPTO_DIR/ios_gnutls_shim.h"
-# iOS-Mythic ml494 (#61 text wall): dwrite had NO unixlib, so every
+# iOS-Madeira ml494 (#61 text wall): dwrite had NO unixlib, so every
 # __wine_unix_call from dwrite.dll failed and get_glyph_bbox never ran —
 # every glyph run reported an EMPTY bbox and Chromium drew no text at all.
 # freetype is static here, so dwrite_freetype_ios.c rewrites dlopen/dlsym.
@@ -112,7 +112,7 @@ compile_unixlib "$BUILD_DIR/dwrite_freetype_ios.c" "dwrite_unixlib" "dwrite" \
 compile_unixlib "$CRYPTO_DIR/crypt32_unixlib_ios.c" "crypt32_unixlib" "crypt32" \
     -I"$WINE_SRC/dlls/crypt32" -I"$GNUTLS_PREFIX/include" \
     -include "$CRYPTO_DIR/ios_gnutls_shim.h"
-# iOS-Mythic 2026-08-03 (#79 transport): in-process NSI TCP connection
+# iOS-Madeira 2026-08-03 (#79 transport): in-process NSI TCP connection
 # tables (nsiproxy.sys is not shipped; PE nsi.dll falls back to this).
 compile_one "$BUILD_DIR/nsi_unixlib_ios.c" "nsi_unixlib_ios"
 

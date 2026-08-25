@@ -1,4 +1,4 @@
-# Mythic — Steam/CEF on a jailed iPhone: state of play, evidence, and dead ends
+# Madeira — Steam/CEF on a jailed iPhone: state of play, evidence, and dead ends
 
 **Purpose:** hand an outside agent enough context to propose *new* ideas. Written 2026-08-05.
 Everything below is either **CONFIRMED** (log- or binary-verified), **REFUTED** (tested and
@@ -202,7 +202,7 @@ These are the project's own rules. An outside agent should assume they are load-
 5. **Offline disassembly is free — exhaust it before spending a device run.** A run costs 40–60 s
    plus pull-and-analyze time.
 6. **Verify deploys by content**, e.g. `grep -ac '<marker>' <shipped binary>`. The `.a`s link
-   into the main `Mythic` Mach-O; grep the bundle binary, not the intermediate.
+   into the main `Madeira` Mach-O; grep the bundle binary, not the intermediate.
 7. **Read Steam's own logs first** (`drive_c/Program Files (x86)/Steam/logs/`) — they use
    cumulative clocks.
 8. **Pull binaries from the phone prefix, not local copies.** A local `libcef.dll` was a

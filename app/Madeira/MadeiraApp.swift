@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct MythicApp: App {
+struct MadeiraApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()

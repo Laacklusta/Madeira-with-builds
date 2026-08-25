@@ -32,7 +32,7 @@ index d413bbbc0ab..bcbfc4ceae3 100644
   *              NtReadFile   (NTDLL.@)
   */
 +#ifdef WINE_IOS
-+/* iOS-Mythic ml487 (#78): the steamloopback JS-boot lottery. Roughly half of all
++/* iOS-Madeira ml487 (#78): the steamloopback JS-boot lottery. Roughly half of all
 + * runs die because Steam's UI JavaScript arrives corrupt — `SyntaxError:
 + * Invalid or unexpected token` in library.js (whole run lost, no dial, no retry
 + * path), or a partial hit where a lazily-loaded chunk fails (`ChunkLoadError:

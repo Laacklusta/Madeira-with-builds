@@ -2032,7 +2032,7 @@ static void load_ntdll_functions( HMODULE module )
     if (p__wine_unix_call_dispatcher_arm64ec)
     {
         /* redirect __wine_unix_call_dispatcher to __wine_unix_call_dispatcher_arm64ec */
-        /* iOS-Mythic NOTE 2026-07-04: attempts 1-4 at de-faulting this slot
+        /* iOS-Madeira NOTE 2026-07-04: attempts 1-4 at de-faulting this slot
          * (~100 Mach faults/present) used a hand-encoded x18-restore stub at
          * pool rx_base+0x1000: (2) unmarked pool VA → routed into the x86
          * emulator by the icall checker; (3) same, observed directly
@@ -2064,7 +2064,7 @@ static void load_ntdll_functions( HMODULE module )
     {
         extern void *ios_jit_translate_addr(void *addr);
         extern void ios_jit_sync_write(void *addr, size_t size);
-        /* Use dprintf to fd 2 (mythic-log) to bypass any ERR-channel filter. */
+        /* Use dprintf to fd 2 (madeira-log) to bypass any ERR-channel filter. */
         dprintf( 2, "XLATE-HOOK enter: module=%p exports=%p\n",
                  module, exports );
         void **p_xlate = (void **)find_named_export( module, exports,
@@ -2142,7 +2142,7 @@ static void load_ntdll_functions( HMODULE module )
         ios_ntdll_unixlib_handle_ptr = p__wine_unixlib_handle;
     }
 
-    /* iOS-Mythic Round 7 (2026-07-04): de-fault the unix-call path.
+    /* iOS-Madeira Round 7 (2026-07-04): de-fault the unix-call path.
      * Pool-executing EC callers read this slot and `blr` its value. With
      * the baseline PE VA they exec-fault (~100 Mach round trips/present,
      * ~0.5ms wall each = the bulk of the gameplay frame); the Mach handler
@@ -2155,7 +2155,7 @@ static void load_ntdll_functions( HMODULE module )
      * route it into the x86 emulator (= attempts 2/3); the ntdll pool
      * image copy is normally already marked at copy time, but mark
      * explicitly and bail to baseline if the bitmap isn't up. */
-    if (p__wine_unix_call_dispatcher_arm64ec && !getenv("MYTHIC_NO_UNIXCALL_DIRECT"))
+    if (p__wine_unix_call_dispatcher_arm64ec && !getenv("MADEIRA_NO_UNIXCALL_DIRECT"))
     {
         extern void *ios_jit_translate_addr(void *addr);
         extern void ios_jit_sync_write(void *addr, size_t size);

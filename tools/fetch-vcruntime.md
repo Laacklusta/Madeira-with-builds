@@ -4,7 +4,7 @@ Games built with MSVC need the Visual C++ runtime. Those DLLs are authored by
 Microsoft and are **not** redistributable under this project's license, so they
 are not committed here. You supply them yourself.
 
-Twelve files are expected in `app/Mythic/x86_64-vcruntime/`:
+Twelve files are expected in `app/Madeira/x86_64-vcruntime/`:
 
 ```
 concrt140.dll              msvcp140_codecvt_ids.dll   vcruntime140.dll
@@ -22,7 +22,7 @@ Download the official x64 redistributable from Microsoft
 ```sh
 brew install sevenzip
 7zz x VC_redist.x64.exe -o/tmp/vcredist
-7zz x /tmp/vcredist/.rsrc/1033/CABINET/*.cab -oapp/Mythic/x86_64-vcruntime
+7zz x /tmp/vcredist/.rsrc/1033/CABINET/*.cab -oapp/Madeira/x86_64-vcruntime
 ```
 
 Exact layout varies by redistributable version; the goal is simply the twelve
@@ -35,7 +35,7 @@ In particular, do not strip Authenticode signatures. You can check that a file
 still carries its signature payload:
 
 ```sh
-python3 - app/Mythic/x86_64-vcruntime/*.dll <<'EOF'
+python3 - app/Madeira/x86_64-vcruntime/*.dll <<'EOF'
 import struct, sys
 for path in sys.argv[1:]:
     d = open(path, 'rb').read()

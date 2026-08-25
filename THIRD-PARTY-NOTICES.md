@@ -1,10 +1,10 @@
 # Third-party components
 
-Mythic is built from several upstream projects plus original work. Each
+Madeira is built from several upstream projects plus original work. Each
 component keeps its own license. This file records what is here, what ships in
 the binary, and what is still unresolved.
 
-Mythic's own code, and the combined application as distributed, are under
+Madeira's own code, and the combined application as distributed, are under
 **GPL-3.0-or-later** (`LICENSE`). Each upstream keeps its own license; the
 dependency license texts are in `LICENSES/`. See "Why GPL-3.0-or-later" below.
 
@@ -40,7 +40,7 @@ over-relied on:
 - Obligations attach on **distribution**. Someone may modify this privately and
   never publish anything.
 - It does **not** cover games, data files or other independent programs merely
-  run through Mythic. They are separate works.
+  run through Madeira. They are separate works.
 - It cannot stop anyone independently reimplementing the same functionality.
 - FEX-Emu and DXMT code already published under MIT **remains available under
   MIT**. Choosing GPL here cannot revoke a grant those projects already made.
@@ -62,7 +62,7 @@ Do **not** assume that everything outside the submodules is original. It is not.
 - `app/`, `tools/`, `scripts/` and `patches/` are largely original, but contain
   vendored and derived files too.
 
-Rather than claim authorship of whole directories: **original Mythic-authored
+Rather than claim authorship of whole directories: **original Madeira-authored
 files that do not carry another license notice are licensed under
 GPL-3.0-or-later.** Files carrying their own copyright or license header are
 governed by that header.
@@ -73,7 +73,7 @@ Games built with MSVC require Microsoft's Visual C++ runtime DLLs. Those are
 Microsoft-authored binaries, redistributable only under the Visual Studio
 redistributable terms and only in unmodified form. They are **not** covered by
 this project's license and are **no longer tracked in this repository**;
-`app/Mythic/x86_64-vcruntime/*.dll` is gitignored and must be supplied locally.
+`app/Madeira/x86_64-vcruntime/*.dll` is gitignored and must be supplied locally.
 See `tools/fetch-vcruntime.md`.
 
 ### Known defect in this repository's history

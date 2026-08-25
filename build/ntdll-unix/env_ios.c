@@ -897,7 +897,7 @@ static WCHAR *get_initial_environment( SIZE_T *pos, SIZE_T *size )
         if (STARTS_WITH(str, "Steam") || STARTS_WITH(str, "SteamAppPath") ||
             STARTS_WITH(str, "SteamGameId") || STARTS_WITH(str, "SteamAppId") ||
             STARTS_WITH(str, "FNA3D_") || STARTS_WITH(str, "MONO_") ||
-            STARTS_WITH(str, "MYTHIC_JIT_WRITE_OFFSET"))
+            STARTS_WITH(str, "MADEIRA_JIT_WRITE_OFFSET"))
             fprintf(stderr, "[iOS env] processing: %s\n", str);
 
         /* skip Unix special variables and use the Wine variants instead */
@@ -929,7 +929,7 @@ static WCHAR *get_initial_environment( SIZE_T *pos, SIZE_T *size )
 
         ptr += ntdll_umbstowcs( str, strlen(str) + 1, ptr, end - ptr );
         if (STARTS_WITH(str, "Steam") || STARTS_WITH(str, "FNA3D_") || STARTS_WITH(str, "MONO_") ||
-            STARTS_WITH(str, "MYTHIC_JIT_WRITE_OFFSET"))
+            STARTS_WITH(str, "MADEIRA_JIT_WRITE_OFFSET"))
             fprintf(stderr, "[iOS env] INCLUDED: %s\n", str);
     }
     *pos = ptr - env;
@@ -1474,18 +1474,18 @@ static WCHAR *get_initial_directory(void)
     int size;
     WCHAR *ret = NULL;
 
-    /* iOS-Mythic override: MYTHIC_INITIAL_CWD env var lets the bridge
+    /* iOS-Madeira override: MADEIRA_INITIAL_CWD env var lets the bridge
      * specify the initial NT path directly (e.g. "C:\\Program Files\\Thumper\\")
      * when iOS unix_to_nt_file_name can't resolve drive_c via dosdevices. */
     {
-        const char *mythic_cwd = getenv("MYTHIC_INITIAL_CWD");
-        if (mythic_cwd && *mythic_cwd)
+        const char *madeira_cwd = getenv("MADEIRA_INITIAL_CWD");
+        if (madeira_cwd && *madeira_cwd)
         {
-            size_t len = strlen(mythic_cwd);
+            size_t len = strlen(madeira_cwd);
             ret = malloc((len + 8) * sizeof(WCHAR));
             /* Format: \??\<path>[\] */
             ret[0] = '\\'; ret[1] = '?'; ret[2] = '?'; ret[3] = '\\';
-            for (size_t i = 0; i < len; i++) ret[4 + i] = mythic_cwd[i];
+            for (size_t i = 0; i < len; i++) ret[4 + i] = madeira_cwd[i];
             ret[4 + len] = 0;
             /* ensure trailing backslash */
             if (len && ret[4 + len - 1] != '\\')
@@ -1493,7 +1493,7 @@ static WCHAR *get_initial_directory(void)
                 ret[4 + len] = '\\';
                 ret[4 + len + 1] = 0;
             }
-            os_log(OS_LOG_DEFAULT, "[Wine] get_initial_directory: MYTHIC_INITIAL_CWD override = %s", mythic_cwd);
+            os_log(OS_LOG_DEFAULT, "[Wine] get_initial_directory: MADEIRA_INITIAL_CWD override = %s", madeira_cwd);
             return ret;
         }
     }
@@ -1958,7 +1958,7 @@ static void *build_wow64_parameters( const RTL_USER_PROCESS_PARAMETERS *params )
  */
 static void init_peb( RTL_USER_PROCESS_PARAMETERS *params, void *module )
 {
-    /* iOS-Mythic (ml111, task #35 fallout): write to the BOOTING THREAD's PEB,
+    /* iOS-Madeira (ml111, task #35 fallout): write to the BOOTING THREAD's PEB,
      * not the file-scope `peb` global. Pseudo-process children boot through
      * this same code, and with two children booting concurrently the global
      * points at (at most) one of them — the other keeps the NULL that
@@ -2193,7 +2193,7 @@ static RTL_USER_PROCESS_PARAMETERS *build_initial_params( void **module )
  * iOS-only rename: win32u/window.c also defines init_startup_info() (a
  * different, much smaller function called from win32u's init_user). On a
  * normal Wine build the two live in different .so files and don't conflict.
- * Statically linking everything into Mythic.dylib makes the symbols collide,
+ * Statically linking everything into Madeira.dylib makes the symbols collide,
  * and the linker silently picks ONE of them — when it picks ours, win32u's
  * init_user → init_startup_info ends up calling build_initial_params() with
  * stale/NULL main_argv and crashes inside get_full_path → strlen(NULL).

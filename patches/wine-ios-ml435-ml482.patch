@@ -6,7 +6,7 @@ index 2ed2d0d9a29..5dd94cca95f 100644
      TRACE("(%p, %lu, %p, %u, %p, %p, %p)\n",
            hProcess, pid, hFile, DumpType, ExceptionParam, UserStreamParam, CallbackParam);
  
-+    /* iOS-Mythic ml467 (wall #79, run ml466): Steam's crashhandler64 writes a
++    /* iOS-Madeira ml467 (wall #79, run ml466): Steam's crashhandler64 writes a
 +     * minidump whenever its watchdog sees steamwebhelper "not responding".
 +     * Under FEX the dump takes minutes — it walks the whole single-process
 +     * address space and suspends every thread of the target pseudo-process on
@@ -62,7 +62,7 @@ index 14be842871a..56a287af65d 100644
  static HANDLE nsi_device = INVALID_HANDLE_VALUE;
  static HANDLE nsi_device_async = INVALID_HANDLE_VALUE;
  
-+/* iOS-Mythic 2026-08-03 rev=ml470 (#79 transport): nsiproxy.sys is not
++/* iOS-Madeira 2026-08-03 rev=ml470 (#79 transport): nsiproxy.sys is not
 + * shipped on iOS, so \\.\Nsi never exists and every NSI table read
 + * fails — Steam's loopback peer authentication (GetExtendedTcpTable pid
 + * lookup) dies before any pid compare and each CEF connection is
@@ -114,7 +114,7 @@ index af18c89de67..6b51406d855 100644
          {
              TRACE( "calling handler %p (rec=%p, frame=%I64x context=%p, dispatch=%p)\n",
                     dispatch.LanguageHandler, rec, dispatch.EstablisherFrame, orig_context, &dispatch );
-+            /* iOS-Mythic #81 (ml475 fix, REVERTED ml477 — do not re-land
++            /* iOS-Madeira #81 (ml475 fix, REVERTED ml477 — do not re-land
 +             * without gating).  LanguageHandler is ImageBase + unwind handler
 +             * RVA, i.e. a PE VA, and PE .text is non-executable here, so
 +             * call_seh_handler's `blr x11` faults on instruction fetch.  The
@@ -150,7 +150,7 @@ index 7b93ed1187b..879fe9fceb6 100644
  
  static struct futex_queue futex_queues[256];
  
-+/* iOS-Mythic ml441 (#74): futex_queues is per-ntdll-COPY .data, and our
++/* iOS-Madeira ml441 (#74): futex_queues is per-ntdll-COPY .data, and our
 + * pseudo-processes carry multiple ntdll copies (native + EC), so a waker
 + * walking this copy's array never finds a waiter registered through another
 + * copy — the wake dies here and the waiter parks forever (the post-
@@ -175,7 +175,7 @@ index 7b93ed1187b..879fe9fceb6 100644
 +    return ios_shared_queues;
 +}
 +
- /* iOS-Mythic ml407 (task #60): the chrome_ipc pump parks in RtlWaitOnAddress
+ /* iOS-Madeira ml407 (task #60): the chrome_ipc pump parks in RtlWaitOnAddress
   * immediately after its master-event wake and is never alerted ([alert-unix]:
   * one WAIT, no ALERTED, while its sibling server thread cycles normally).
 @@ -920,7 +945,8 @@ static struct futex_queue *get_futex_queue( const void *addr )
@@ -209,7 +209,7 @@ index ab301f13949..127b295922a 100644
  }
  
 +#ifdef __APPLE__
-+/* iOS-Mythic ml464 [sock-big] (#78): steamui's login boot died on
++/* iOS-Madeira ml464 [sock-big] (#78): steamui's login boot died on
 + * "ChunkLoadError: missing steamloopback.host/libraries/libraries~....js" —
 + * a 1.99MB file that EXISTS on disk, served by steam.exe's loopback HTTP
 + * server, while a 678KB file served fine seconds earlier. Prime suspect is a
@@ -260,7 +260,7 @@ index ab301f13949..127b295922a 100644
 +        tab[slot].next[is_send] = tab[slot].tot[is_send] + 0x80000;
 +    }
 +}
-+/* iOS-Mythic ml469 (wall #79 transport): the ml468 run showed steamwebhelper
++/* iOS-Madeira ml469 (wall #79 transport): the ml468 run showed steamwebhelper
 + * re-dialing ws://localhost:6252x/transportsocket/ every ~5s forever, with the
 + * only connect evidence being IPv6 EHOSTUNREACH + IPv4 EINPROGRESS and no
 + * completion, while steam.exe's own connectivity test reported NoLAN.  Nothing
@@ -828,7 +828,7 @@ index 86398e8b272..f9d443a6f3d 100644
  #ifdef USE_FUTEX
      {
          LONG *futex = &entry->futex;
-+        /* iOS-Mythic ml482 (#86): NtAlertThreadByThreadId itself needs no TEB —
++        /* iOS-Madeira ml482 (#86): NtAlertThreadByThreadId itself needs no TEB —
 +         * it wakes a TARGET tid — but the two probes below read
 +         * NtCurrentTeb()->ClientId.UniqueThread, i.e. TEB+0x48. Threads created
 +         * directly by CEF/FEX have no TEB, so on those the probe (not the
@@ -839,7 +839,7 @@ index 86398e8b272..f9d443a6f3d 100644
 +         * sender", which is all the diagnostics ever needed. */
 +        TEB *self_teb = NtCurrentTeb();
 +        unsigned int self_tid = self_teb ? (unsigned int)(ULONG_PTR)self_teb->ClientId.UniqueThread : 0;
-         /* iOS-Mythic ml400 (task #60): ring of recent alerts so a storming
+         /* iOS-Madeira ml400 (task #60): ring of recent alerts so a storming
           * waiter can name its pounder — see [alert-storm] in
           * NtWaitForAlertByThreadId. */
          LONG pos = InterlockedIncrement( &ios_alert_ring_pos );
@@ -911,7 +911,7 @@ index 22f8b496220..fd667fe56c4 100644
  
      TRACE( "(0x%08x,%p,0x%08x,%p)\n", class, info, size, ret_size );
  
-+    /* iOS-Mythic ml441 (#74): private class — hands every PE ntdll copy the
++    /* iOS-Madeira ml441 (#74): private class — hands every PE ntdll copy the
 +     * address of the ONE process-wide futex queue table (unix sync.c), fixing
 +     * the per-copy futex_queues split that lost RtlWakeAddress* wakes. */
 +    if ((unsigned int)class == 0xf00d && size == sizeof(void *))
@@ -935,7 +935,7 @@ index fdc26bc2276..38def8a8abe 100644
  
  #ifndef HAVE_NETINET_TCP_FSM_H
 +#ifdef __APPLE__
-+/* iOS-Mythic ml478 (#79 root cause): Darwin's TCP_CONNECTION_INFO reports
++/* iOS-Madeira ml478 (#79 root cause): Darwin's TCP_CONNECTION_INFO reports
 + * BSD-numbered FSM states (LISTEN=1, ESTABLISHED=4), but the iOS SDK ships
 + * no netinet/tcp_fsm.h, so the Linux-numbered fallback below was used:
 + * every listener (1) matched TCPS_ESTABLISHED and every live connection (4)
@@ -962,14 +962,14 @@ index fdc26bc2276..38def8a8abe 100644
  #endif
 +#endif
 +
-+/* iOS-Mythic ml480 (#84): accept-latency instrument. Steam's WebUITransport
++/* iOS-Madeira ml480 (#84): accept-latency instrument. Steam's WebUITransport
 + * only drains its listen backlog every 2-3 minutes (11-13 connections logged
 + * in one second, then nothing), so CEF's ~12s websocket handshake always times
 + * out and the login window never appears. [acc-ready] stamps the moment the
 + * SERVER sees a pending connection on a listener; [acc-take] stamps the moment
 + * the GUEST actually accepts it. ready-prompt + take-late ⇒ Steam's thread is
 + * the laggard (frame stalls); no [acc-ready] at all ⇒ our poll registration is.
-+ * Wall-clock ms, since mythic-log lines carry no timestamps after boot. */
++ * Wall-clock ms, since madeira-log lines carry no timestamps after boot. */
 +static unsigned long long ios_acc_now_ms(void)
 +{
 +    struct timeval tv;
@@ -983,7 +983,7 @@ index fdc26bc2276..38def8a8abe 100644
          break;
  
      case SOCK_LISTENING:
-+        /* iOS-Mythic ml480 (#84): see accept_socket — stamp when the SERVER
++        /* iOS-Madeira ml480 (#84): see accept_socket — stamp when the SERVER
 +         * first sees a pending connection, so [acc-take] can be differenced
 +         * against it. */
 +        if (event & POLLIN)
@@ -1022,7 +1022,7 @@ index fdc26bc2276..38def8a8abe 100644
          sock->addr_len = sockaddr_from_unix( &unix_addr, &sock->addr.addr, sizeof(sock->addr) );
          sock->peer_addr_len = sockaddr_from_unix( &peer_addr, &sock->peer_addr.addr, sizeof(sock->peer_addr));
  
-+        /* iOS-Mythic ml474 (#79): connect census. The transport reject loop
++        /* iOS-Madeira ml474 (#79): connect census. The transport reject loop
 +         * hinges on the connecting socket's row appearing in the AF_INET
 +         * table SteamUI authenticates from — a dial that lands on the v6
 +         * family can never appear there. One line per stream connect names
@@ -1051,7 +1051,7 @@ index fdc26bc2276..38def8a8abe 100644
      if (getsockopt( fd, IPPROTO_TCP, TCP_INFO, &info, &info_len ) == 0)
          return tcp_state_to_mib_state( info.tcpi_state );
  
-+    /* iOS-Mythic ml474 (#79): the ESTAB fallback below can lie a listener
++    /* iOS-Madeira ml474 (#79): the ESTAB fallback below can lie a listener
 +     * into the ESTAB table (observed: port 27060 with no peer at state=5) —
 +     * record why it fired so honest states can be told from fallbacks. */
 +    {
@@ -1071,7 +1071,7 @@ index fdc26bc2276..38def8a8abe 100644
  
      socket_state = get_tcp_socket_state( get_unix_fd(sock->fd) );
 +
-+    /* iOS-Mythic ml474 (#79): census of every visited socket on the count
++    /* iOS-Madeira ml474 (#79): census of every visited socket on the count
 +     * pass — the ml473 run's table froze at 3 rows while the webhelper's
 +     * dialing client socket (and steam's accepted peers) never appeared.
 +     * This names every socket the walk actually reaches, pre-filter, so

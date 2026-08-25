@@ -47,7 +47,7 @@ struct macdrv_functions_t {
 static CAMetalLayer *g_layer = nil;
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 
-void mythic_display_set_layer(CAMetalLayer *layer) {
+void madeira_display_set_layer(CAMetalLayer *layer) {
     pthread_mutex_lock(&g_lock);
     g_layer = layer;
     pthread_mutex_unlock(&g_lock);
@@ -77,10 +77,10 @@ static void my_release_win_data(struct macdrv_win_data *data) {
     (void)data;
 }
 
-static int mythic_desktop_mode(void) {
+static int madeira_desktop_mode(void) {
     static int desk = -1;
     if (desk < 0) {
-        const char *d = getenv("MYTHIC_DESKTOP");
+        const char *d = getenv("MADEIRA_DESKTOP");
         desk = d && *d == '1';
     }
     return desk;
@@ -107,13 +107,13 @@ static void my_release_metal_device(macdrv_metal_device d) {
 // compositor. Game mode: the fullscreen singleton, exactly as before.
 static macdrv_metal_view my_view_create_metal_view(macdrv_view v, macdrv_metal_device d) {
     (void)d;
-    if (mythic_desktop_mode()) {
+    if (madeira_desktop_mode()) {
         CAMetalLayer *layer = winios_metal_layer_for_hwnd((void *)v);
         if (!layer) {
-            NSLog(@"[mythic-display] desktop metal layer creation failed for hwnd=%p", (void *)v);
+            NSLog(@"[madeira-display] desktop metal layer creation failed for hwnd=%p", (void *)v);
             return NULL;
         }
-        fprintf(stderr, "[mythic-display] desktop metal view for hwnd=%p layer=%p\n", (void *)v, layer);
+        fprintf(stderr, "[madeira-display] desktop metal view for hwnd=%p layer=%p\n", (void *)v, layer);
         fflush(stderr);
         return (macdrv_metal_view)CFBridgingRetain(layer);
     }
@@ -121,7 +121,7 @@ static macdrv_metal_view my_view_create_metal_view(macdrv_view v, macdrv_metal_d
     CAMetalLayer *layer = g_layer;
     pthread_mutex_unlock(&g_lock);
     if (!layer) {
-        NSLog(@"[mythic-display] view_create_metal_view called before layer registered!");
+        NSLog(@"[madeira-display] view_create_metal_view called before layer registered!");
         return NULL;
     }
     return (macdrv_metal_view)CFBridgingRetain(layer);
@@ -158,7 +158,7 @@ static void my_on_main_thread(dispatch_block_t b) {
 // `used` alone proved sufficient: after adding it, all six land in the export
 // trie of a Release build, so no -u roots or -export_dynamic are needed. Do not
 // assume that stays true -- VERIFY BY CONTENT after any build or link change:
-//   xcrun dyld_info -exports Mythic.app/Mythic | grep macdrv_functions
+//   xcrun dyld_info -exports Madeira.app/Madeira | grep macdrv_functions
 // If that prints nothing, Thumper will exit 3 with a white screen.
 
 __attribute__((used, visibility("default")))

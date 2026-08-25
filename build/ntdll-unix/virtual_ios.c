@@ -1336,7 +1336,7 @@ static void ios_span_census( void *base, size_t size, int is_free )
                 (int)ios_span_alloc_n - (int)ios_span_free_n);
 }
 
-/* iOS-Mythic ml462 (#77): reserve->release CYCLE tracker. The ml461 run died
+/* iOS-Madeira ml462 (#77): reserve->release CYCLE tracker. The ml461 run died
  * of a guest placement livelock: V8's CodeRange (512MB, must sit within jump
  * distance of libcef's embedded builtins) reserved, got granted, REJECTED the
  * location, released, and retried forever — ping-ponging on the same two
@@ -1741,14 +1741,14 @@ static int ios_pool_range_execable(size_t off, size_t range_size,
     return 1;
 }
 
-/* iOS-Mythic: secondary user_VA → JIT pool aliases mapping for anonymous
+/* iOS-Madeira: secondary user_VA → JIT pool aliases mapping for anonymous
  * RWX regions (e.g. FEX CodeBuffer). When user_VA is vm_remap'd from JIT pool
  * RX, writes via user_VA fault and the STR fault emulator looks up the RW
  * alias here. Execution faults at user_VA are redirected to the RX alias
  * (which is the only address that's actually executable on iOS TXM).
  * Declared above ios_pool_alloc_range so the allocator can purge stale
  * entries when it recycles a pool range. */
-/* iOS-Mythic ml630: 32 -> 4096.
+/* iOS-Madeira ml630: 32 -> 4096.
  *
  * ULTRAKILL/Mono ran the table dry: `[jit-pool] anon alias table FULL (32 slots)
  * -- writes to 0x705f9d0000 will NOT route!`. The new Mono code buffer then had NO
@@ -1776,7 +1776,7 @@ static volatile int ios_jit_anon_alias_count = 0;
 static volatile int ios_jit_anon_alias_live = 0;
 static volatile int ios_jit_anon_alias_hiwater = 0;
 static volatile int ios_jit_anon_alias_tombstones = 0;
-/* iOS-Mythic ml635: per-alias write telemetry.
+/* iOS-Madeira ml635: per-alias write telemetry.
  *
  * The iOS Mach write path emulates a store through the RW alias and then simply
  * advances PC — it NEVER invalidates FEX's cached translation, unlike the normal
@@ -2226,7 +2226,7 @@ static int ios_tail_carve_occupied( const void *base, size_t size )
 static unsigned ios_tail_carve_n;
 static pthread_mutex_t ios_tail_carve_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* iOS-Mythic ml613: WHICH TAIL CARVE DOES THIS HOST PC LIVE IN, AND IS IT FREE?
+/* iOS-Madeira ml613: WHICH TAIL CARVE DOES THIS HOST PC LIVE IN, AND IS IT FREE?
  *
  * ml612's crash faulted at host pc 0x15361d6d0, which is +0x496d0 into the 16MB
  * carve 0x1535d4000 — a carve that had been FREEd and REUSEd THREE times in the
@@ -2491,7 +2491,7 @@ void ios_jit_add_mapping(void *pe_base, void *jit_base, size_t size)
  * BTCpu64IosAddAliasMapping. Stores the callback, then pushes all
  * currently-registered iOS JIT aliases through it. Future ios_jit_add_mapping
  * calls also push through the stored callback (see above). */
-/* iOS-Mythic ml613: THIS MUST MATCH struct ios_push_jit_aliases_params IN
+/* iOS-Madeira ml613: THIS MUST MATCH struct ios_push_jit_aliases_params IN
  * wine/dlls/ntdll/unixlib.h EXACTLY — ONE FIELD.
  *
  * ml549 added a second `rip_from_hostpc` member here but never added it to the
@@ -2516,7 +2516,7 @@ struct ios_push_jit_aliases_args {
  * instruction that actually executed instead of the block-granular RIP stored in
  * CpuStateFrame+0x18. NULL until xtajit64 binds, and on non-iOS/native paths. */
 unsigned long long (*ios_fex_rip_from_hostpc_cb)(unsigned long long, unsigned long long) = NULL;
-/* iOS-Mythic ml612: FEX's thread-exit lock-release hook (BTCpu64IosReleaseThreadHolds).
+/* iOS-Madeira ml612: FEX's thread-exit lock-release hook (BTCpu64IosReleaseThreadHolds).
  * Resolved in ios_resolve_fex_exports alongside the exact-RIP export. */
 unsigned int (*ios_fex_release_holds_cb)(unsigned long long *, unsigned int *, unsigned int *) = NULL;
 /* ml551: set ONLY by a successful resolve. Never infer "resolved" from the pointer
@@ -2564,7 +2564,7 @@ static void *ios_pe_find_export( const unsigned char *base, const char *want )
     return NULL;
 }
 
-/* iOS-Mythic ml613: resolve BOTH FEX exports by walking the already-mapped
+/* iOS-Madeira ml613: resolve BOTH FEX exports by walking the already-mapped
  * emulator module. Called at the END of unixcall_ios_push_jit_aliases — the
  * guaranteed initialization path — and RETRYABLE until it succeeds.
  *
@@ -2640,7 +2640,7 @@ void ios_resolve_fex_exports( void )
                 "-- will retry on the next alias push\n", ios_jit_mapping_count );
 }
 
-/* iOS-Mythic ml618: per-pseudo-process leaked-hold release callback.
+/* iOS-Madeira ml618: per-pseudo-process leaked-hold release callback.
  *
  * The pointer stored here MUST have come from the PE side's GET_PTR path
  * (arm64ec_redirect_ptr -> xlate_ios_jit), which yields an executable ARM64
@@ -2758,17 +2758,17 @@ struct ios_mono_bridge g_ios_mono_bridge = { .abi_version = 2 };  /* ml649: stru
  * ⚠️ Gate the WORK, not the PRINT. Several probes do an expensive read (Mach
  * calls, dual-map readback, hashing) and only then decide whether to format a
  * line; wrapping just the dprintf would save nothing. */
-volatile int mythic_diag_enabled = 0;
+volatile int madeira_diag_enabled = 0;
 
-void mythic_set_diag_enabled( int on )
+void madeira_set_diag_enabled( int on )
 {
-    __atomic_store_n( &mythic_diag_enabled, on ? 1 : 0, __ATOMIC_RELAXED );
+    __atomic_store_n( &madeira_diag_enabled, on ? 1 : 0, __ATOMIC_RELAXED );
     /* Publish to FEX too — it is a separate PE and cannot see this global. */
     __atomic_store_n( &g_ios_mono_bridge.diag_enabled, on ? 1u : 0u, __ATOMIC_RELAXED );
     dprintf( 2, "[diag] ml649 diagnostics %s\n", on ? "ON" : "OFF (quiet)" );
 }
 
-int mythic_get_diag_enabled( void ) { return __atomic_load_n( &mythic_diag_enabled, __ATOMIC_RELAXED ); }
+int madeira_get_diag_enabled( void ) { return __atomic_load_n( &madeira_diag_enabled, __ATOMIC_RELAXED ); }
 
 /* Faulting-thread registers are not trusted, and a probe must never fault
  * inside a fault. Every dereference on the capture path goes through here —
@@ -2924,7 +2924,7 @@ int ios_jit_anon_alias_add(void *user_va, size_t size, void *jit_rw_alias)
      * Write user_va LAST — it's the match key for the lock-free readers. */
     pthread_mutex_lock( &ios_pool_lock );
 
-    /* iOS-Mythic ml625: AN OVERLAPPING LIVE ENTRY IS STALE BY CONSTRUCTION.
+    /* iOS-Madeira ml625: AN OVERLAPPING LIVE ENTRY IS STALE BY CONSTRUCTION.
      *
      * Two live mappings cannot own the same guest VA, but this table used to
      * APPEND duplicates and ios_jit_anon_alias_lookup() returns the FIRST match
@@ -3000,11 +3000,11 @@ int ios_jit_anon_alias_add(void *user_va, size_t size, void *jit_rw_alias)
     return 1;
 }
 
-/* iOS-Mythic ml625: is [user_va, user_va+size) ALREADY backed by a live anon
+/* iOS-Madeira ml625: is [user_va, user_va+size) ALREADY backed by a live anon
  * alias? Used to make the anonymous-RWX remap idempotent -- see the call site in
  * the mprotect(PROT_EXEC) path. Returns 1 and fills the aliases (offset-adjusted
  * for the requested base) when an existing entry fully covers the request. */
-/* iOS-Mythic ml631: read-only alias probe for the PE-side fault reporter.
+/* iOS-Madeira ml631: read-only alias probe for the PE-side fault reporter.
  * Pure lookup — takes no locks, mutates nothing, safe to call from a fault path. */
 NTSTATUS unixcall_ios_jit_alias_probe( void *args )
 {
@@ -3069,7 +3069,7 @@ NTSTATUS unixcall_ios_jit_alias_probe( void *args )
     return STATUS_SUCCESS;
 }
 
-/* iOS-Mythic ml632: does [user_va, +size) OVERLAP any live anon-JIT alias?
+/* iOS-Madeira ml632: does [user_va, +size) OVERLAP any live anon-JIT alias?
  * find_cover() asks for full containment; the mixed-mapping bug is precisely a
  * PARTIAL overlap, so it needs its own test. Returns 1 and reports the entry. */
 int ios_jit_anon_alias_overlaps(void *user_va, size_t size, uintptr_t *base_out, uintptr_t *end_out)
@@ -3439,11 +3439,11 @@ int ios_jit_patch_stale_pointer(unsigned long long stale_va)
     /* Whole-.data exact-value scan+rewrite. DEFAULT-ON (2026-07-08:
      * confirmed NOT the cause of the Thumper menu→game freeze — that is
      * the pre-existing ~53.7s JIT-compile/debugger block, task #22, which
-     * reproduced with this gated OFF). Set MYTHIC_NO_HEAL_ESCALATE=1 to
+     * reproduced with this gated OFF). Set MADEIRA_NO_HEAL_ESCALATE=1 to
      * disable if a false-positive rewrite is ever suspected (it rewrites
      * ANY 8-byte word equal to the stale VA, a small coincidental-collision
      * risk on data-heavy x86 guests). */
-    if (!patched && !getenv("MYTHIC_NO_HEAL_ESCALATE"))
+    if (!patched && !getenv("MADEIRA_NO_HEAL_ESCALATE"))
     {
         for (i = 0; i < ios_jit_mapping_count; i++)
         {
@@ -3681,7 +3681,7 @@ static int ios_insn_x18_role(uint32_t insn)
 
     /* LDR/STR (register offset) — [29:27]=111, V=0, [25:24]=00, [21]=1,
      * [11:10]=10; size [31:30] and opc [23:22] are DON'T-CARES.
-     * iOS-Mythic 2026-07-04: mask was 0x3E7/0x1C1 which demanded
+     * iOS-Madeira 2026-07-04: mask was 0x3E7/0x1C1 which demanded
      * insn[30]==0 AND insn[22]==0 — i.e. only 8/32-bit STORES matched.
      * Every register-offset LOAD off x18 (`ldrb w8,[x18,x8]` — win32u's
      * hottest TEB poll) went unpatched and cost one Mach fault per visit
@@ -4394,7 +4394,7 @@ static const ULONG_PTR ios_steer_slot = 0x7C00000000;
  *
  * ios_thread_died() is called from the pthread_exit path in thread_ios.c. */
 #define IOS_STEER_MAX 256
-/* iOS-Mythic ml312 (task #54): `inuse` is set the moment ANY allocation lands inside a steered
+/* iOS-Madeira ml312 (task #54): `inuse` is set the moment ANY allocation lands inside a steered
  * arena, and blocks reclamation of that arena forever after. See ios_steer_reclaim_dead(). */
 static struct { uint64_t base; uint64_t size; unsigned tid; unsigned freed; unsigned inuse; } ios_steer[IOS_STEER_MAX];
 static unsigned ios_steer_n;
@@ -4438,7 +4438,7 @@ static uint64_t ios_steer_reclaim_dead( void )
 
         if (ios_steer[i].freed || !ios_steer[i].base) continue;
         if (!ios_tid_is_dead( ios_steer[i].tid )) continue;
-        /* iOS-Mythic ml312 (task #54) -- THE FIX FOR THE VA DOUBLE-ALLOCATION.
+        /* iOS-Madeira ml312 (task #54) -- THE FIX FOR THE VA DOUBLE-ALLOCATION.
          *
          * These 512MB ranges are FEX's jemalloc HEAP ARENAS, which are process-wide. Tagging one
          * with the thread that happened to trigger it and releasing it when that thread exits is
@@ -4469,7 +4469,7 @@ static uint64_t ios_steer_reclaim_dead( void )
          * Keep the inuse flag as a DETECTOR instead: if reclaim ever releases an arena that has
          * interior allocations, say so loudly, so any later corruption in that range can be tied
          * to this event with evidence rather than theory. */
-        /* iOS-Mythic ml330: the ml312 guard WAS right — restored, now with the evidence
+        /* iOS-Madeira ml330: the ml312 guard WAS right — restored, now with the evidence
          * the ml313 revert was waiting for.
          *
          * ml329 fired this detector 10 times, and cross-referencing [vname] against the
@@ -5452,7 +5452,7 @@ static NTSTATUS ios_stub_unix_call_ok(void *args) {
     return STATUS_SUCCESS;
 }
 
-/* iOS-Mythic 2026-07-10: the unixlib "funcs" value handed back to the PE
+/* iOS-Madeira 2026-07-10: the unixlib "funcs" value handed back to the PE
  * side is a TABLE that __wine_unix_call_dispatcher indexes as
  * funcs[code](args) — storing a bare function there makes UNIX_CALL read
  * the stub's own instruction bytes as a pointer and blr to garbage (the
@@ -5478,18 +5478,18 @@ static void ios_init_stub_tables(void)
     ios_gl_stub_unix_call_table[2] = ios_stub_unix_call_ok;  /* process_detach */
 }
 
-/* DXMT's unix call table, statically linked into Mythic.app via
+/* DXMT's unix call table, statically linked into Madeira.app via
  * libdxmt_combined.a (originally __wine_unix_call_funcs, renamed in
  * winemetal_unix.c to avoid collision with our own ntdll table). */
 extern const void *dxmt_winemetal_unix_call_funcs[];
 
-/* iOS-Mythic 2026-05-13: null audio driver unix table. Implements the 37
+/* iOS-Madeira 2026-05-13: null audio driver unix table. Implements the 37
  * mmdevapi audio funcs to provide a fake "iOS Null" render endpoint with
  * a real-time IAudioClock — enough for FMOD's rhythm-game timing engine
  * to advance past audio-gated splash/intro sequences. See audio_null_ios.c */
 extern const void *audio_null_ios_unix_call_funcs[];
 
-/* iOS-Mythic 2026-07-05 (Steam S0): network + crypto unix tables,
+/* iOS-Madeira 2026-07-05 (Steam S0): network + crypto unix tables,
  * compiled from wine/dlls/<dll>/ sources into libntdll_unix.a with
  * -D__wine_unix_call_funcs=<dll>_unix_call_funcs (build/ntdll-unix/
  * build.sh compile_unixlib). The GnuTLS-backed ones (bcrypt, secur32,
@@ -5500,12 +5500,12 @@ extern const void *bcrypt_unix_call_funcs[];
 extern const void *secur32_unix_call_funcs[];
 extern const void *crypt32_unix_call_funcs[];
 
-/* iOS-Mythic 2026-08-03 (#79 transport): in-process NSI TCP connection
+/* iOS-Madeira 2026-08-03 (#79 transport): in-process NSI TCP connection
  * tables — nsiproxy.sys is not shipped, PE nsi.dll falls back to this
  * when \\.\Nsi can't be opened. See nsi_unixlib_ios.c */
 extern const void *nsi_unix_call_funcs[];
 
-/* iOS-Mythic ml494 (#61 text wall): dwrite's unix side (freetype glyph
+/* iOS-Madeira ml494 (#61 text wall): dwrite's unix side (freetype glyph
  * rasterisation). Without it every __wine_unix_call from dwrite.dll failed,
  * so get_glyph_bbox never ran and every glyph run reported an EMPTY bbox —
  * ml494 measured exactly that (12/12 [dwrite-bounds] EMPTY, [dwrite-ink]
@@ -5543,7 +5543,7 @@ static NTSTATUS load_builtin_unixlib( void *module, BOOL wow, const void **funcs
 #ifdef WINE_IOS
     /* On iOS, unix .so files aren't available for most DLLs.
      * Detect the special case where the unix_path names a DLL whose unix
-     * side is statically linked into Mythic.app, and point funcs at that
+     * side is statically linked into Madeira.app, and point funcs at that
      * table instead of the dummy stub. */
     if (status == STATUS_DLL_NOT_FOUND)
     {
@@ -5612,9 +5612,9 @@ static NTSTATUS load_builtin_unixlib( void *module, BOOL wow, const void **funcs
             /* Register win32u's NtUser / NtGdi syscall table in slot 1.
              * Activating this causes user32 process_attach to crash until
              * wineserver shared-memory bringup is complete; gated on the
-             * MYTHIC_WIN32U env var so we can flip it on for debugging. */
+             * MADEIRA_WIN32U env var so we can flip it on for debugging. */
             pthread_once( &ios_stub_tables_once, ios_init_stub_tables );
-            if (getenv("MYTHIC_WIN32U")) {
+            if (getenv("MADEIRA_WIN32U")) {
                 NTSTATUS s = win32u_unix_lib_init();
                 *funcs = (const void *)ios_stub_unix_call_table;
                 WARN_(module)("iOS: module %p (%s) -> win32u_unix_lib_init() = 0x%x (ACTIVE)\n",
@@ -5868,7 +5868,7 @@ static BYTE get_page_vprot( const void *addr )
 #endif
 }
 
-/* iOS-Mythic ml306 (task #53): lock-free vprot peek for the Mach reclaim handler.
+/* iOS-Madeira ml306 (task #53): lock-free vprot peek for the Mach reclaim handler.
  *
  * The [reclaim-recover] path in signal_arm64_ios.c re-mmaps arena-band pages whose host
  * mapping has vanished (mprotect ENOMEM), on the assumption that fresh zeros are correct.
@@ -6078,7 +6078,7 @@ static BOOL set_vprot( struct file_view *view, void *base, size_t size, BYTE vpr
 static void set_arm64ec_range( const void *addr, size_t size )
 {
     UINT64 *map = arm64ec_view->base;
-    /* iOS-Mythic: arm64x_check_call hardcodes 4KB-page indexing per the
+    /* iOS-Madeira: arm64x_check_call hardcodes 4KB-page indexing per the
      * Windows ABI (`lsr x11, #12` and `lsr x11, #18`) regardless of host
      * page size. iOS uses 16KB pages (page_shift=14). Always use a 12-bit
      * shift here so check_call's reads land at the same bitmap byte we
@@ -7172,7 +7172,7 @@ static size_t ios_x18_tramp_prealloc_scan( const char *image, size_t image_size 
 }
 
 
-/* [share-probe] logging: the LogStore periodically REWRITES mythic-log.txt
+/* [share-probe] logging: the LogStore periodically REWRITES madeira-log.txt
  * from its own buffer, destroying interleaved raw-stderr lines (ml85: the
  * probe's whole verdict vanished between pulls). Tee every probe line into
  * Documents/share-probe.txt (O_APPEND, own fd) so no rewrite can eat it. */
@@ -7412,14 +7412,14 @@ static void ios_share_probe(void)
  * jit26_detach on a scratch thread — worst case is a stuck background
  * thread, never a wedged boot. (ml81 lesson: CS_DEBUGGED is STICKY after
  * detach — that's why blessed JIT keeps working — so csops can't signal
- * detach; StikJITHelper.detachDebugger sets MYTHIC_DETACHED instead.
+ * detach; StikJITHelper.detachDebugger sets MADEIRA_DETACHED instead.
  * Desktop sessions detach on session exit or the 20-min maxWait cap.) */
 static void *ios_share_probe_thread(void *arg)
 {
     int i;
     for (i = 0; i < 900; i++)  /* ≤30min at 2s — covers the 20-min cap */
     {
-        if (getenv("MYTHIC_DETACHED"))
+        if (getenv("MADEIRA_DETACHED"))
         {
             dprintf(2, "[share-probe] debugger DETACHED (poll %d) — running post-detach probe\n", i);
             ios_share_probe();
@@ -7464,7 +7464,7 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
      * reclaim-recover ENOMEM). Recovering that VA means stopping the poison at source.
      *
      * mprotect_exec is the one hook every protection change funnels through. Its existing
-     * ERR() output is swallowed by MYTHIC_QUIET, so log via dprintf, and only for pool
+     * ERR() output is swallowed by MADEIRA_QUIET, so log via dprintf, and only for pool
      * addresses so this cannot flood. */
     {
         extern void *ios_jit_rx_base_global;
@@ -7621,7 +7621,7 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
             jit_pool_init_done = 1;
         }
 
-        /* iOS-Mythic ml640: AN OWNED ANON-JIT RANGE IS SETTLED — DECIDE IT FIRST.
+        /* iOS-Madeira ml640: AN OWNED ANON-JIT RANGE IS SETTLED — DECIDE IT FIRST.
          *
          * ROOT CAUSE, proven by the ml639 three-view hash:
          *   guest  = 0x706F9B0000  HASH16K aa4f0ea29a4c7f5c
@@ -7857,7 +7857,7 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
                         base, (unsigned long)size, image_base, (unsigned long)image_size,
                         ios_pe_module_name(image_base, image_size));
 
-                /* iOS-Mythic ml632: MIXED-MAPPING TRIPWIRE.
+                /* iOS-Madeira ml632: MIXED-MAPPING TRIPWIRE.
                  *
                  * This test is ALL-OR-NOTHING: if the request is not wholly inside the
                  * image it is treated as anonymous in its entirety — even the part that
@@ -7911,7 +7911,7 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
 
             if (!image_base || !image_size)
             {
-                /* iOS-Mythic: anonymous RWX request (e.g. FEX's CodeBuffer
+                /* iOS-Madeira: anonymous RWX request (e.g. FEX's CodeBuffer
                  * allocates a 16MB PAGE_EXECUTE_READWRITE region for runtime
                  * JIT). No PE header to copy. Strategy: take a slot from the
                  * JIT pool, vm_remap from `jit_rx_base + offset` into the
@@ -7923,7 +7923,7 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
                 size_t page_size = 0x4000;
                 size_t alloc_size = (size + page_size - 1) & ~(page_size - 1);
 
-                /* iOS-Mythic ml625: NEVER RE-BACK A GUEST VA THAT IS ALREADY LIVE.
+                /* iOS-Madeira ml625: NEVER RE-BACK A GUEST VA THAT IS ALREADY LIVE.
                  *
                  * vm_remap below uses VM_FLAGS_OVERWRITE and does NOT preserve the
                  * old contents, so re-running this path on a range that already holds
@@ -8025,7 +8025,7 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
                     return -1;
                 }
 
-                /* iOS-Mythic ml634: PRESERVE THE GUEST'S EXISTING BYTES BEFORE REMAPPING.
+                /* iOS-Madeira ml634: PRESERVE THE GUEST'S EXISTING BYTES BEFORE REMAPPING.
                  *
                  * The vm_remap below uses VM_FLAGS_OVERWRITE to put a FRESH, ZERO-FILLED
                  * pool slot on top of `base`. The PE-image path a few hundred lines down
@@ -8113,7 +8113,7 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
                 if (arm64ec_view)
                 {
                     char *jit_base = (char *)jit_rx_base + offset;
-                    /* iOS-Mythic: 4KB-page indexing per arm64x_check_call ABI */
+                    /* iOS-Madeira: 4KB-page indexing per arm64x_check_call ABI */
                     size_t bm_start = ((size_t)jit_base >> 12) / 8;
                     size_t bm_end   = (((size_t)jit_base + alloc_size) >> 12) / 8;
                     size_t bm_size  = ROUND_SIZE(bm_start, bm_end + 1 - bm_start, page_mask);
@@ -8276,14 +8276,14 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
             ios_jit_verify_text_exec( ios_pe_module_name( image_base, image_size ),
                                       (char *)jit_rx_base + offset, image_size );
 
-            /* task #34 [share-probe]: DEFAULT-OFF (set MYTHIC_SHARE_PROBE=1).
+            /* task #34 [share-probe]: DEFAULT-OFF (set MADEIRA_SHARE_PROBE=1).
              * ml79: running it inline here (pre-detach, on explorer's boot
              * thread) wedged the session — exec-at-alias hangs while the
              * debugger is attached. Gated + deferred to a scratch thread
              * that waits for CS_DEBUGGED to clear before probing. */
             {
                 static int ios_share_probed;
-                if (!ios_share_probed && getenv("MYTHIC_SHARE_PROBE"))
+                if (!ios_share_probed && getenv("MADEIRA_SHARE_PROBE"))
                 {
                     pthread_t pt;
                     ios_share_probed = 1;
@@ -8323,7 +8323,7 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
             {
                 char *jit_base = (char *)jit_rx_base + offset;
                 char *rw_image = (char *)jit_rw_base + offset;
-                /* iOS-Mythic: arm64x_check_call uses 4KB-page indexing always.
+                /* iOS-Madeira: arm64x_check_call uses 4KB-page indexing always.
                  * Compute bitmap byte offsets with 12-bit shift so committed
                  * pages cover where set_arm64ec_range will write. */
                 size_t bm_start = ((size_t)jit_base >> 12) / 8;
@@ -8401,7 +8401,7 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
                     }
                 }
                 {
-                    /* iOS-Mythic dual-map RX-side verification.
+                    /* iOS-Madeira dual-map RX-side verification.
                      * Read the first 4 bytes of .text via RX alias and compare
                      * to the same offset via RW alias (which we just memcpy'd
                      * to). If they differ, the dual-map isn't aliased correctly
@@ -9110,7 +9110,7 @@ static BOOL set_vprot( struct file_view *view, void *base, size_t size, BYTE vpr
 }
 
 
-/* iOS-Mythic ml293 (task #52): the PartitionAlloc-arena band. Steered arenas are placed
+/* iOS-Madeira ml293 (task #52): the PartitionAlloc-arena band. Steered arenas are placed
  * top-down at/above 0x7c00000000 and no guest PE image is ever mapped >= 0x7400000000
  * (verified across 13 runs: every [jit-pool] image base is 0x71-0x73), so this test is
  * unambiguous and needs no bounds table. */
@@ -9160,7 +9160,7 @@ static NTSTATUS set_protection( struct file_view *view, void *base, SIZE_T size,
         return STATUS_ACCESS_DENIED;
     }
 
-    /* iOS-Mythic ml638 A/B: NEVER MAKE AN ANON-JIT-ALIASED PAGE PHYSICALLY WRITABLE.
+    /* iOS-Madeira ml638 A/B: NEVER MAKE AN ANON-JIT-ALIASED PAGE PHYSICALLY WRITABLE.
      *
      * The ULTRAKILL alias [0x705bc80000,0x705bc90000) starts COHERENT — an emulated
      * store at +0x1368 read back identically through RX and RW. By the crash the two
@@ -9206,7 +9206,7 @@ static NTSTATUS set_protection( struct file_view *view, void *base, SIZE_T size,
 
 
 /***********************************************************************
- *           ios_verify_commit_zero      (iOS-Mythic ml293, task #52)
+ *           ios_verify_commit_zero      (iOS-Madeira ml293, task #52)
  *
  * The OTHER HALF of the decommit zero contract.
  *
@@ -9433,7 +9433,7 @@ static void *find_reserved_free_area_outside_preloader( void *start, void *end, 
 static void *map_reserved_area_inner( void *limit_low, void *limit_high, size_t size, int top_down,
                                       int unix_prot, size_t align_mask );
 
-/* iOS-Mythic ml520 timing wrapper — see map_reserved_area_inner. */
+/* iOS-Madeira ml520 timing wrapper — see map_reserved_area_inner. */
 static void *map_reserved_area( void *limit_low, void *limit_high, size_t size, int top_down,
                                 int unix_prot, size_t align_mask )
 {
@@ -9462,7 +9462,7 @@ static void *map_reserved_area_inner( void *limit_low, void *limit_high, size_t 
 {
     void *ptr = NULL;
     struct reserved_area *area;
-    /* iOS-Mythic ml520: time the aligned VA reservation.
+    /* iOS-Madeira ml520: time the aligned VA reservation.
      *
      * ml519's freeze detector measured a 53.9s whole-app stall (t+32.7 →
      * t+86.6, 90 threads) and the FIRST thing to resume was a NEW FEX
@@ -9958,7 +9958,7 @@ static NTSTATUS map_file_into_view_ex( struct file_view *view, int fd, size_t st
        and if alignment is correct */
     if ((!removable || (flags & MAP_SHARED)) && host_addr == map_addr && host_size == map_size)
     {
-        /* iOS-Mythic ml563: THE DIRECT INVARIANT — check the backing BEFORE mapping.
+        /* iOS-Madeira ml563: THE DIRECT INVARIANT — check the backing BEFORE mapping.
          *
          * ml561 proved the Steam/CEF killer: a 0x40000 section view mmap'd over a
          * backing file of only 0x10000/0x20000 bytes. Every page past EOF is
@@ -10152,7 +10152,7 @@ static int ios_pool_live_overlap( uintptr_t rw_start, size_t size,
     return 0;
 }
 
-/* iOS-Mythic ml610 [dc-census]: HOW MUCH DOES A DECOMMIT ACTUALLY RETURN?
+/* iOS-Madeira ml610 [dc-census]: HOW MUCH DOES A DECOMMIT ACTUALLY RETURN?
  *
  * Three builds have now argued about this from the memory curve instead of
  * measuring it. ml608 assumed the full 16MB callret clear was WASTING memory;
@@ -10271,7 +10271,7 @@ static NTSTATUS decommit_pages( struct file_view *view, char *base, size_t size 
         }
     }
 
-    /* iOS-Mythic (task #22 real root cause, 2026-07-10): FEX's Windows
+    /* iOS-Madeira (task #22 real root cause, 2026-07-10): FEX's Windows
      * VirtualDontNeed() = MEM_DECOMMIT (often WITHOUT recommit — LookupCache
      * uses it as a cheap bzero on every cache clear) and then touches the
      * pages again assuming Linux MADV_DONTNEED semantics (still mapped,
@@ -10343,7 +10343,7 @@ static NTSTATUS decommit_pages( struct file_view *view, char *base, size_t size 
             dc_vsize  = size;
         }
 
-        /* iOS-Mythic ml293 (task #52): VERIFY THE DECOMMIT ZERO CONTRACT IN THE PA ARENAS.
+        /* iOS-Madeira ml293 (task #52): VERIFY THE DECOMMIT ZERO CONTRACT IN THE PA ARENAS.
          *
          * Chromium's PartitionAlloc decommits slot spans and requires the pages to read
          * back as zero on recommit; its BackupRefPtr refcount lives in that metadata. A
@@ -12542,7 +12542,7 @@ NTSTATUS virtual_alloc_thread_stack( INITIAL_TEB *stack, ULONG_PTR limit_low, UL
     size = max( reserve_size, commit_size );
     if (size < 1024 * 1024) size = 1024 * 1024;  /* Xlib needs a large stack */
 #ifdef WINE_IOS
-    /* iOS-Mythic ml422 (#70): first CreateBrowser (ml421) died on a genuine
+    /* iOS-Madeira ml422 (#70): first CreateBrowser (ml421) died on a genuine
      * STACK_OVERFLOW — 256+ frames of libcef recursion ran a webhelper thread
      * stack dry. Chromium sizes its worker stacks for pure-x64 frames, but
      * under ARM64EC the emulated x64 frames interleave with native ARM64
@@ -12808,7 +12808,7 @@ NTSTATUS virtual_handle_fault( EXCEPTION_RECORD *rec, void *stack )
     return ret;
 }
 
-/* iOS-Mythic ml420 (#69): BUS self-heal support. ml419's fatal chain began
+/* iOS-Madeira ml420 (#69): BUS self-heal support. ml419's fatal chain began
  * with a committed, plain-READ libcef .rdata page whose host protection had
  * been stripped BEHIND wine's back (no guest NtProtectVirtualMemory touched
  * the range — the stripper is a raw mprotect/mach_vm call). Report wine's
@@ -12924,7 +12924,7 @@ void *virtual_setup_exception( void *stack_ptr, size_t size, EXCEPTION_RECORD *r
          * 49,500 faults in ml261 and 53,000 in ml262, each consuming the entire run:
          *   [fault-stuck] page 0x73d16ac000 faulted 2048 times with NO progress
          *   [fault-stuck]   region 0x73d16b0000 +0x40000 prot=3/7   <- first region ABOVE
-         *   sym pc=Mythic.debug.dylib`setup_raise_exception+0x104 (stp q1,q0,[x0,#0x1d0])
+         *   sym pc=Madeira.debug.dylib`setup_raise_exception+0x104 (stp q1,q0,[x0,#0x1d0])
          * The write target sat 0x170 bytes BELOW the base of the guest stack region,
          * i.e. the guest stack was exhausted and the frame did not fit.
          *
@@ -13594,7 +13594,7 @@ static NTSTATUS allocate_virtual_memory( void **ret, SIZE_T *size_ptr, ULONG typ
                 base = view->base;
                 if (vprot & VPROT_EXEC || force_exec_prot) mprotect_range( base, size, 0, 0 );
 
-                /* iOS-Mythic ml308 (task #54): DETECT VA HANDED OUT TWICE.
+                /* iOS-Madeira ml308 (task #54): DETECT VA HANDED OUT TWICE.
                  *
                  * ml308's [vname] map (which only became readable once ml294 turned the iOS
                  * VirtualName no-op into a range log) shows 50 OVERLAPPING FEX allocations,
@@ -13667,7 +13667,7 @@ static NTSTATUS allocate_virtual_memory( void **ret, SIZE_T *size_ptr, ULONG typ
         if (!(view = find_view( base, size ))) status = STATUS_NOT_MAPPED_VIEW;
         else
         {
-            /* iOS-Mythic (task #22): never MADV_DONTNEED an anon-RWX pool
+            /* iOS-Madeira (task #22): never MADV_DONTNEED an anon-RWX pool
              * alias — discarding the shared entry pages silently zeroes the
              * pool RX view too (live FEX code/data). MEM_RESET is advisory,
              * so skipping it is legal. */
@@ -13741,7 +13741,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR z
     /* ml284: does ANYTHING allocate/commit executable memory, and where?
      *
      * There is already an exec-allocation probe here using ERR(), but the `virtual` debug
-     * channel is filtered by MYTHIC_QUIET -- err:virtual: appears ZERO times in the logs,
+     * channel is filtered by MADEIRA_QUIET -- err:virtual: appears ZERO times in the logs,
      * including the uncapped first-30 lines it should always emit. So its silence carries
      * no information, and I must not read "no exec allocations happen" from it. (That is
      * the same mistake as the [unexec] probe, whose filters made me wrongly retract the
@@ -14164,7 +14164,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR z
              * a steer that cannot be served is still never worse than not
              * steering. The 1GB ceiling stays: >=1GB reserves are PartitionAlloc
              * pool business and go through the jumbo path above. */
-            /* iOS-Mythic ml462 (#77): V8 CodeRange placement service + livelock
+            /* iOS-Madeira ml462 (#77): V8 CodeRange placement service + livelock
              * breaker. Signature: kernel-pick, reserve-only, PAGE_NOACCESS,
              * 512MB(+slop) — V8's kMaximalCodeRangeSize, wanting to land within
              * jump distance of libcef's embedded builtins in the module band
@@ -14547,7 +14547,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR z
             ios_bigres_note( *ret, *size_ptr );
         if (!st) ios_span_census( *ret, *size_ptr, 0 );   /* ml435 (#73) */
 
-        /* iOS-Mythic ml310 (task #54): SYSCALL-BOUNDARY census of arena-band allocations.
+        /* iOS-Madeira ml310 (task #54): SYSCALL-BOUNDARY census of arena-band allocations.
          *
          * ml310's [va-arena] probe inside allocate_virtual_memory's reserve branch logged 26 lines,
          * ALL of them size=0x20000000 type=0x2000 (jemalloc's MEM_RESERVE-only arenas) and NOT ONE
@@ -14722,7 +14722,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
     /* ml284: does ANYTHING allocate/commit executable memory, and where?
      *
      * There is already an exec-allocation probe here using ERR(), but the `virtual` debug
-     * channel is filtered by MYTHIC_QUIET -- err:virtual: appears ZERO times in the logs,
+     * channel is filtered by MADEIRA_QUIET -- err:virtual: appears ZERO times in the logs,
      * including the uncapped first-30 lines it should always emit. So its silence carries
      * no information, and I must not read "no exec allocations happen" from it. (That is
      * the same mistake as the [unexec] probe, whose filters made me wrongly retract the
@@ -14792,7 +14792,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
     if (!*size_ptr) return STATUS_INVALID_PARAMETER;
 
 #ifdef WINE_IOS
-    /* iOS-Mythic: For FEX-style EC_CODE RWX allocations, allocate from the
+    /* iOS-Madeira: For FEX-style EC_CODE RWX allocations, allocate from the
      * JIT pool RX range directly. This avoids the cross-region RIP-relative
      * addressing problem: when emit_VA == execute_VA (both are the JIT pool
      * RX alias), ADRP/ADR/B/BL offsets calculated at emit time work correctly
@@ -14822,7 +14822,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
          * log shows "exec alloc degraded 0x2000000 -> 0x400000" followed by
          * normal execution. Smaller generations waste less per pin; the
          * [pool-tail] census says whether pinning or churn dominates. */
-        /* iOS-Mythic ml480 (#84): the flat 16MB refusal above made EVERY hot
+        /* iOS-Madeira ml480 (#84): the flat 16MB refusal above made EVERY hot
          * thread rotate its code buffer constantly. ml479's run: 79 tail
          * events, 267k real compiles, and a compile-miss rate PINNED at ~19-20%
          * for the whole run (a warmed-up workload should approach 0). Each
@@ -14899,7 +14899,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
         if (reserve_offset + alloc_size > ios_jit_pool_size_global / 2 ||
             pool_tail_off < jit_pool_offset)
         {
-            /* iOS-Mythic ml421 (ml420 death): the old "fall through to normal
+            /* iOS-Madeira ml421 (ml420 death): the old "fall through to normal
              * allocation" is ALWAYS fatal for FEX — the normal path hands back
              * guest-band memory whose exec-enable silently fails (ml363), and
              * ClearCache then wild-writes through the unusable buffer
@@ -14950,7 +14950,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
             void *jit_rw = (char *)ios_jit_rw_base_global + pool_tail_off;
             *ret = jit_rx;
             *size_ptr = alloc_size;
-            /* iOS-Mythic: pre-fill the buffer with NOPs (0xd503201f) via the RW
+            /* iOS-Madeira: pre-fill the buffer with NOPs (0xd503201f) via the RW
              * alias. FEX's emitter writes instructions one-at-a-time via
              * memcpy(WritePtr, &Word, 4); on iOS the underlying STR fault is
              * caught by our Mach handler. If the handler ever silently misses
@@ -14971,7 +14971,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
                 for (size_t i = 0; i < nwords; i++) rw_words[i] = 0xd503201fu;  /* NOP */
             }
 
-            /* iOS-Mythic: do NOT call set_arm64ec_range here. FEX's CodeBuffer
+            /* iOS-Madeira: do NOT call set_arm64ec_range here. FEX's CodeBuffer
              * holds compiled-from-x86 host ARM64 blocks, not ARM64EC PE code.
              * Marking it as EC causes the dispatcher's loop-top EC bitmap
              * check (which tests the GUEST RIP) to falsely route into ExitFunctionEC
@@ -15196,7 +15196,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
             ios_bigres_note( *ret, *size_ptr );
         if (!st) ios_span_census( *ret, *size_ptr, 0 );   /* ml435 (#73) */
 
-        /* iOS-Mythic ml310 (task #54): SYSCALL-BOUNDARY census of arena-band allocations.
+        /* iOS-Madeira ml310 (task #54): SYSCALL-BOUNDARY census of arena-band allocations.
          *
          * ml310's [va-arena] probe inside allocate_virtual_memory's reserve branch logged 26 lines,
          * ALL of them size=0x20000000 type=0x2000 (jemalloc's MEM_RESERVE-only arenas) and NOT ONE
@@ -15568,7 +15568,7 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T 
          * Over-syncing is OK: parent is always the source of truth. */
         ERR("iOS NtProtect-sync-check: base=%p sz=0x%lx old=0x%x new=0x%x\n",
             base, (unsigned long)size, old, new_prot);
-        /* iOS-Mythic 2026-05-13: bail out if the new protection makes the
+        /* iOS-Madeira 2026-05-13: bail out if the new protection makes the
          * source region unreadable. The sync below memcpys from `base` into
          * the JIT pool. When the caller is revoking read access (e.g.
          * PAGE_NOACCESS=1, or any prot without READ bit), the source page
@@ -15600,7 +15600,7 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T 
 
                 if (rgn_start >= pe_start && rgn_end <= pe_end)
                 {
-                    /* iOS-Mythic ml632 A/B: DO NOT IAT-SYNC MEMORY OWNED BY AN ANON JIT ALIAS.
+                    /* iOS-Madeira ml632 A/B: DO NOT IAT-SYNC MEMORY OWNED BY AN ANON JIT ALIAS.
                      *
                      * Containment against the PE image is not sufficient ownership: the
                      * anon-RWX classifier above is all-or-nothing, so pages can be inside a
@@ -16419,7 +16419,7 @@ NTSTATUS WINAPI NtQueryVirtualMemory( HANDLE process, LPCVOID addr,
                 if ((status = load_unixlib_by_name( name, &handle )))
                 {
 #ifdef WINE_IOS
-                    /* iOS-Mythic 2026-05-13: no .so files on iOS for audio
+                    /* iOS-Madeira 2026-05-13: no .so files on iOS for audio
                      * drivers; provide static unix tables for wineios.drv
                      * (silent audio backend). Match by name; success path
                      * returns a magic non-NULL handle so subsequent

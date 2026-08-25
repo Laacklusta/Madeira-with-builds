@@ -81,7 +81,7 @@ int main(void)
 
     if (failures)
         printf("=== %d FAILED. If only QueryPerfCounter passed, the server is not "
-               "updating KUSER_SHARED_DATA (see MYTHIC_USD_TIME). ===\n", failures);
+               "updating KUSER_SHARED_DATA (see MADEIRA_USD_TIME). ===\n", failures);
     else
         printf("=== all clocks advance ===\n");
     return failures ? 1 : 0;

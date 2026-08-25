@@ -75,7 +75,7 @@ static void *wineserver_thread_func(void *arg) {
     @autoreleasepool {
         // Set up file-based logging
         NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-        NSString *logPath = [docs stringByAppendingPathComponent:@"mythic-log.txt"];
+        NSString *logPath = [docs stringByAppendingPathComponent:@"madeira-log.txt"];
         pthread_mutex_lock(&g_ws_bridge_log_mutex);
         if (g_ws_bridge_log) fclose(g_ws_bridge_log);
         g_ws_bridge_log = fopen(logPath.UTF8String, "a");
@@ -147,8 +147,8 @@ int wineserver_start(const char *prefix_path) {
      * save overwrites the template's (ml587: 17,479 keys -> 24). Seeding is
      * idempotent, so this costs one stat() on every launch after the first. */
     {
-        extern void mythic_seed_prefix_if_needed(const char *prefix_path);
-        mythic_seed_prefix_if_needed(prefix_path);
+        extern void madeira_seed_prefix_if_needed(const char *prefix_path);
+        madeira_seed_prefix_if_needed(prefix_path);
     }
 
     g_wineserver_running = 1;

@@ -40,7 +40,7 @@ static int mkdir_p(const char *path) {
     return 0;
 }
 
-int mythic_extract_prefix_tgz(const char *tgz_path, const char *dest_dir) {
+int madeira_extract_prefix_tgz(const char *tgz_path, const char *dest_dir) {
     gzFile gz = gzopen(tgz_path, "rb");
     if (!gz) {
         fprintf(stderr, "[prefix-extract] gzopen failed: %s\n", tgz_path);

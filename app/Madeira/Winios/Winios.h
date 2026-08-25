@@ -1,6 +1,6 @@
 /* Winios.h — registration entry point for the iOS user_driver.
  *
- * winios.drv is Mythic's iOS-side replacement for Wine's per-platform
+ * winios.drv is Madeira's iOS-side replacement for Wine's per-platform
  * display drivers (winemac.drv, winex11.drv, etc.). It plugs into the
  * win32u-unix `__wine_set_user_driver` extension point, providing the
  * minimum-viable pieces of the user_driver_funcs interface that real
@@ -29,7 +29,7 @@ extern "C" {
  * Idempotent: safe to call repeatedly; first call wins. */
 void winios_drv_register(void);
 
-/* Touch → mouse bridge. Called by Mythic Swift's UIKit gesture
+/* Touch → mouse bridge. Called by Madeira Swift's UIKit gesture
  * handlers; events are queued to a thread-safe ring buffer and drained
  * inside winios_pProcessEvents. (x, y) are in logical 1024×768 pixels
  * — Swift side handles iOS-pixel → logical-pixel scaling. */
@@ -70,5 +70,5 @@ void winios_cursor_move(int x, int y);
  * links into the same Mach-O). Default OFF = quiet/fast. Toggling live lets
  * loud and quiet be compared inside ONE run, same scene, same thermal state —
  * something two separate builds can never give you. */
-void mythic_set_diag_enabled(int on);
-int  mythic_get_diag_enabled(void);
+void madeira_set_diag_enabled(int on);
+int  madeira_get_diag_enabled(void);

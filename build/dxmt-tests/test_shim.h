@@ -10,7 +10,7 @@
 #include <string.h>
 #include <wchar.h>
 
-struct mythic_shader_blob {
+struct madeira_shader_blob {
     const char  *hlsl_name;
     const char  *entry;
     const char  *profile;
@@ -18,13 +18,13 @@ struct mythic_shader_blob {
     SIZE_T       size;
 };
 
-extern "C" const struct mythic_shader_blob mythic_shader_blobs[];
-extern "C" const unsigned int mythic_shader_blob_count;
+extern "C" const struct madeira_shader_blob madeira_shader_blobs[];
+extern "C" const unsigned int madeira_shader_blob_count;
 
 // Minimal ID3DBlob wrapping static memory. All methods trivial.
-class MythicStaticBlob : public ID3D10Blob {
+class MadeiraStaticBlob : public ID3D10Blob {
 public:
-    MythicStaticBlob(const void *d, SIZE_T s) : data_(d), size_(s), refs_(1) {}
+    MadeiraStaticBlob(const void *d, SIZE_T s) : data_(d), size_(s), refs_(1) {}
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void **out) override {
         *out = nullptr; return E_NOINTERFACE;
     }
@@ -40,7 +40,7 @@ private:
     ULONG       refs_;
 };
 
-static HRESULT WINAPI mythic_D3DCompileFromFile(
+static HRESULT WINAPI madeira_D3DCompileFromFile(
     LPCWSTR pFileName, CONST D3D_SHADER_MACRO *pDefines, ID3DInclude *pInclude,
     LPCSTR pEntrypoint, LPCSTR pTarget, UINT Flags1, UINT Flags2,
     ID3DBlob **ppCode, ID3DBlob **ppErrorMsgs)
@@ -51,13 +51,13 @@ static HRESULT WINAPI mythic_D3DCompileFromFile(
     char name_utf8[256] = {0};
     for (int i = 0; i < 255 && pFileName[i]; i++) name_utf8[i] = (char)pFileName[i];
 
-    for (unsigned int i = 0; i < mythic_shader_blob_count; i++) {
-        const struct mythic_shader_blob *b = &mythic_shader_blobs[i];
+    for (unsigned int i = 0; i < madeira_shader_blob_count; i++) {
+        const struct madeira_shader_blob *b = &madeira_shader_blobs[i];
         if (strcmp(b->hlsl_name, name_utf8) == 0 &&
             strcmp(b->entry, pEntrypoint) == 0 &&
             strcmp(b->profile, pTarget) == 0)
         {
-            *ppCode = new MythicStaticBlob(b->data, b->size);
+            *ppCode = new MadeiraStaticBlob(b->data, b->size);
             return S_OK;
         }
     }
@@ -66,4 +66,4 @@ static HRESULT WINAPI mythic_D3DCompileFromFile(
     return E_FAIL;
 }
 
-#define D3DCompileFromFile mythic_D3DCompileFromFile
+#define D3DCompileFromFile madeira_D3DCompileFromFile

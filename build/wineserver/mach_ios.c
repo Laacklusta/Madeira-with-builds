@@ -498,7 +498,7 @@ static int ios_safe_read( uint64_t addr, void *buf, unsigned int size )
  *   final logical resume   : release exactly one Mach hold
  * An ordinary context snapshot must never release a persistent hold.
  *
- * OPT-IN (MYTHIC_REAL_SUSPEND=1) and default-off: we are a single Mach process
+ * OPT-IN (MADEIRA_REAL_SUSPEND=1) and default-off: we are a single Mach process
  * and wineserver is a thread inside it, sharing the allocator with the guest,
  * so genuinely freezing a thread that holds the malloc lock or FEX's
  * CodeInvalidationMutex can deadlock the suspender. Windows apps tolerate this
@@ -511,9 +511,9 @@ int ios_real_suspend_enabled(void)
     static int env = -1;
     if (env < 0)
     {
-        const char *e = getenv( "MYTHIC_REAL_SUSPEND" );
+        const char *e = getenv( "MADEIRA_REAL_SUSPEND" );
         env = (e && e[0] == '1') ? 1 : 0;
-        fprintf( stderr, "[real-susp] ml730 MYTHIC_REAL_SUSPEND=%d\n", env );
+        fprintf( stderr, "[real-susp] ml730 MADEIRA_REAL_SUSPEND=%d\n", env );
     }
     return env;
 }
@@ -667,14 +667,14 @@ int ios_fill_thread_context( struct thread *thread,
      * RtlIsEcCode() is deliberately not called here: that is a PE-side export and this is
      * native Unix code (ml613). The frame PC is classified later, in the EC wrapper.
      *
-     * Opt-in via MYTHIC_CTX_FRAME=1 while it is unproven. Every validation failure falls
+     * Opt-in via MADEIRA_CTX_FRAME=1 while it is unproven. Every validation failure falls
      * through to the old behaviour rather than inventing state. */
     if (have_native)
     {
         static int ctx_frame_env = -1;
         if (ctx_frame_env < 0)
         {
-            const char *e = getenv( "MYTHIC_CTX_FRAME" );
+            const char *e = getenv( "MADEIRA_CTX_FRAME" );
             ctx_frame_env = (e && e[0] == '1') ? 1 : 0;
         }
         if (ctx_frame_env && thread->teb)

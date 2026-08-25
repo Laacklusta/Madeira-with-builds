@@ -26,7 +26,7 @@
 
 #include <pthread.h>
 #include <assert.h>
-#include <unistd.h>  /* iOS-Mythic: dprintf for BADMODE diagnostic */
+#include <unistd.h>  /* iOS-Madeira: dprintf for BADMODE diagnostic */
 #include <stdio.h>
 
 #include "ntstatus.h"
@@ -181,7 +181,7 @@ static struct monitor virtual_monitor =
 
 #ifdef WINE_IOS
 /* S2 virtual desktop: screen size for the virtual monitor. The app sets
- * MYTHIC_SCREEN_W/H (device pixels, e.g. 1170x2532) in desktop mode so
+ * MADEIRA_SCREEN_W/H (device pixels, e.g. 1170x2532) in desktop mode so
  * the wine desktop covers the whole display; default stays 1024x768 for
  * the games path. */
 static void ios_screen_size( int *w, int *h )
@@ -189,7 +189,7 @@ static void ios_screen_size( int *w, int *h )
     static int sw, sh;
     if (!sw)
     {
-        const char *we = getenv( "MYTHIC_SCREEN_W" ), *he = getenv( "MYTHIC_SCREEN_H" );
+        const char *we = getenv( "MADEIRA_SCREEN_W" ), *he = getenv( "MADEIRA_SCREEN_H" );
         sw = (we && atoi( we ) > 0) ? atoi( we ) : 1024;
         sh = (he && atoi( he ) > 0) ? atoi( he ) : 768;
     }
@@ -3837,7 +3837,7 @@ static struct source *find_source( UNICODE_STRING *name )
     return source;
 }
 
-/* iOS-Mythic (task #24): in the virtual-monitor regime the sources list
+/* iOS-Madeira (task #24): in the virtual-monitor regime the sources list
  * is EMPTY — find_source() fails, so NtUserEnumDisplayDevices and
  * NtUserEnumDisplaySettings hard-fail for every caller. Games treat that
  * as a fatal video-init error: Thumper's video settings page enumerated
@@ -3988,7 +3988,7 @@ NTSTATUS WINAPI NtUserEnumDisplayDevices( UNICODE_STRING *device, DWORD index,
                                is_adapter ? "\\\\.\\DISPLAY1" : "\\\\.\\DISPLAY1\\Monitor0" );
         if (info->cb >= offsetof(DISPLAY_DEVICEW, DeviceString) + sizeof(info->DeviceString))
             asciiz_to_unicode( info->DeviceString,
-                               is_adapter ? "Mythic Display" : "Generic Non-PnP Monitor" );
+                               is_adapter ? "Madeira Display" : "Generic Non-PnP Monitor" );
         if (info->cb >= offsetof(DISPLAY_DEVICEW, StateFlags) + sizeof(info->StateFlags))
         {
             if (is_adapter)
@@ -4599,7 +4599,7 @@ LONG WINAPI NtUserChangeDisplaySettings( UNICODE_STRING *devname, DEVMODEW *devm
     TRACE( "%s %p %p %#x %p\n", debugstr_us(devname), devmode, hwnd, flags, lparam );
     TRACE( "flags=%s\n", _CDS_flags(flags) );
 
-    /* iOS-Mythic: pre-emptive dprintf so we see the call even on early returns. */
+    /* iOS-Madeira: pre-emptive dprintf so we see the call even on early returns. */
     {
         char devname_buf[128] = "<null>";
         if (devname && devname->Buffer && devname->Length)
@@ -4626,7 +4626,7 @@ LONG WINAPI NtUserChangeDisplaySettings( UNICODE_STRING *devname, DEVMODEW *devm
 
     if ((!devname || !devname->Length) && !devmode) return apply_display_settings( NULL, NULL, hwnd, flags, lparam );
 
-    /* iOS-Mythic: Wine's iOS port has no primary display source registered
+    /* iOS-Madeira: Wine's iOS port has no primary display source registered
      * (default_update_display_devices isn't called because nulldrv claims
      * to handle UpdateDisplayDevices). Thumper passes devname="" + devmode
      * + CDS_TEST to validate the mode. With no source, find_source returns
@@ -4653,7 +4653,7 @@ LONG WINAPI NtUserChangeDisplaySettings( UNICODE_STRING *devname, DEVMODEW *devm
     else ret = apply_display_settings( source, &full_mode, hwnd, flags, lparam );
     source_release( source );
 
-    /* iOS-Mythic 2026-05-13: dump the requested mode/result via dprintf (Wine's
+    /* iOS-Madeira 2026-05-13: dump the requested mode/result via dprintf (Wine's
      * ERR() doesn't reliably reach our stderr-capture log on iOS). */
     if (ret && devmode)
     {
@@ -7173,7 +7173,7 @@ int get_system_metrics( int index )
     case SM_CYMINTRACK:   return 38;
     case SM_CXMAXTRACK:   return 1920;
     case SM_CYMAXTRACK:   return 1080;
-    /* screen-size metrics follow MYTHIC_SCREEN_W/H (defaults keep the
+    /* screen-size metrics follow MADEIRA_SCREEN_W/H (defaults keep the
      * legacy 1024x768 for the games path where the env is unset).
      * Explorer's taskbar positions itself from SM_C{X,Y}SCREEN — the
      * old hardcode parked it at y=748, below a 960x540 desktop. */

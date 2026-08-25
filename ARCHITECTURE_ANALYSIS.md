@@ -716,12 +716,12 @@ These are different things: `increased-memory-limit` = more physical RAM allowed
 **Solution: [GetMoreRam](https://github.com/hugeBlack/GetMoreRam) (used by MeloNX)**
 
 GetMoreRam is a sideloadable app that modifies App ID capabilities on Apple's Developer Portal. The flow:
-1. Sideload Mythic with any sideloader (SideStore, AltStore, etc.)
+1. Sideload Madeira with any sideloader (SideStore, AltStore, etc.)
 2. Sideload the [GetMoreRam/Entitlement IPA](https://github.com/hugeBlack/GetMoreRam/releases/download/nightly/Entitlement.ipa)
 3. Open GetMoreRam → Settings → sign in with the **same Apple ID** used for sideloading
-4. App IDs → Refresh → select Mythic's app ID (e.g., `com.mythic.emulator.XXXXXX`)
+4. App IDs → Refresh → select Madeira's app ID (e.g., `com.madeira.emulator.XXXXXX`)
 5. Tap **Add Increased Memory Limit** (and **Extended Virtual Addressing** if available)
-6. **Delete and reinstall Mythic** with the same IPA
+6. **Delete and reinstall Madeira** with the same IPA
 
 What happens under the hood: GetMoreRam uses Apple's Developer Portal API to add the capability to the registered App ID. On reinstall, the sideloader generates a new provisioning profile from Apple's servers which now includes the capability. The entitlement in the binary matches the profile, and iOS honors it.
 

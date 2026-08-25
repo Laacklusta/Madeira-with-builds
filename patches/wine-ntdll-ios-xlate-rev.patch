@@ -7,7 +7,7 @@ index a80db21c980..54769b87ed8 100644
      if (status == STATUS_NOT_SUPPORTED) status = STATUS_INVALID_IMAGE_FORMAT;
  
 +#ifdef __arm64ec__
-+    /* iOS-Mythic mixed-arch pseudo-processes: in a native-ARM64 session the
++    /* iOS-Madeira mixed-arch pseudo-processes: in a native-ARM64 session the
 +     * shared system32 farm serves ARM64 binaries for colliding names, which
 +     * an AMD64 child (running this EC ntdll privately) cannot load. Fall
 +     * back to C:\windows\sysx64, a farm of the full ARM64EC DLL set —
@@ -185,7 +185,7 @@ index a6e1dcfeca8..41383726f5c 100644
      ULONG_PTR frame;
      DWORD res;
  
-+    /* iOS-Mythic 2026-07-04: [SEH_RATE] — the render worker burns ~75% of
++    /* iOS-Madeira 2026-07-04: [SEH_RATE] — the render worker burns ~75% of
 +     * its frame in virtual_unwind/RtlVirtualUnwind2/memset below this
 +     * function (PROF), yet nothing logs: these are HANDLED exceptions
 +     * (likely software RaiseException/C++ throws — no Mach fault, TRACE
@@ -207,7 +207,7 @@ index a6e1dcfeca8..41383726f5c 100644
      dispatch.HistoryTable  = &table;
      dispatch.NonVolatileRegisters = nonvol_regs.Buffer;
  
-+    /* iOS-Mythic 2026-07-04: no-progress guard. A dispatch whose context
++    /* iOS-Madeira 2026-07-04: no-progress guard. A dispatch whose context
 +     * holds JIT-pool VAs finds no unwind tables (function tables are
 +     * registered for the PE VAs), so RtlVirtualUnwind2's leaf-frame
 +     * fallback can cycle without advancing — measured: ONE stuck dispatch
@@ -252,7 +252,7 @@ index a6e1dcfeca8..41383726f5c 100644
  
      rec->ExceptionFlags |= EXCEPTION_UNWINDING | (end_frame ? 0 : EXCEPTION_EXIT_UNWIND);
  
-+    /* iOS-Mythic 2026-07-04: [UNW_RATE] — [SEH_RATE] in call_seh_handlers
++    /* iOS-Madeira 2026-07-04: [UNW_RATE] — [SEH_RATE] in call_seh_handlers
 +     * stayed at zero while PROF shows the render worker living in
 +     * virtual_unwind/RtlVirtualUnwind2, so THIS entry point (phase-2
 +     * unwind without dispatch = longjmp / handled unwinds) must be the
@@ -278,7 +278,7 @@ index ace0510f2ef..f76d83f174c 100644
      unsigned int i, prolog_offset;
      BOOL mach_frame = FALSE, chained = FALSE;
  
-+    /* iOS-Mythic 2026-07-04: [VU2_RATE] — the render worker lives in this
++    /* iOS-Madeira 2026-07-04: [VU2_RATE] — the render worker lives in this
 +     * function per PROF, yet BOTH exception-path callers (call_seh_handlers,
 +     * RtlUnwindEx) measured cold. Someone calls the raw unwind API directly
 +     * and constantly. Log first + every 4096th: rate, unwound pc, and the

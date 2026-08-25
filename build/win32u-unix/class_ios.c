@@ -83,7 +83,7 @@ static struct list class_list = LIST_INIT( class_list );
 
 HINSTANCE user32_module = 0;
 
-/* iOS-Mythic (Thing B root cause): win32u is a single shared instance
+/* iOS-Madeira (Thing B root cause): win32u is a single shared instance
  * across pseudo-processes, but the head of winproc_array (the builtin
  * class procs installed by NtUserInitializeClientPfnArrays) and
  * user32_module are PER-PROCESS state on real Windows — every user32
@@ -142,7 +142,7 @@ static HINSTANCE ios_cur_user32_module(void)
 static WINDOWPROC *find_winproc( WNDPROC func, BOOL ansi )
 {
     unsigned int i;
-    /* iOS-Mythic: match builtin procs against the CURRENT process's
+    /* iOS-Madeira: match builtin procs against the CURRENT process's
      * table (the raw pointer being registered lives in that process's
      * user32); the returned pointer stays on winproc_array so
      * proc_to_handle identity is preserved. */
@@ -261,7 +261,7 @@ BOOL is_winproc_unicode( WNDPROC proc, BOOL def_val )
 
 void get_winproc_params( struct win_proc_params *params, BOOL fixup_ansi_dst )
 {
-    /* iOS-Mythic: resolve builtin procs against the DISPATCHING
+    /* iOS-Madeira: resolve builtin procs against the DISPATCHING
      * process — this is the call that fed explorer an x64 wndproc. */
     WINDOWPROC *proc = ios_resolve_builtin( get_winproc_ptr( params->func ));
 
@@ -332,7 +332,7 @@ NTSTATUS WINAPI NtUserInitializeClientPfnArrays( const ntuser_client_func_ptr *c
     int slot, n;
     UINT i;
 
-    /* iOS-Mythic: install into THIS pseudo-process's table instead of
+    /* iOS-Madeira: install into THIS pseudo-process's table instead of
      * clobbering the session-wide array (the Thing B taskbar wedge).
      * The first initializer (the session) also populates the legacy
      * globals as the fallback for processes that never load user32. */
@@ -1369,7 +1369,7 @@ static void register_builtins(void)
  */
 void register_builtin_classes(void)
 {
-    /* iOS-Mythic: all pseudo-processes share this unix-side image, so a
+    /* iOS-Madeira: all pseudo-processes share this unix-side image, so a
      * pthread_once here registers the builtin classes only for the FIRST
      * process — but the wineserver tracks window classes per process, so
      * every later pseudo-process fails any builtin-control create with

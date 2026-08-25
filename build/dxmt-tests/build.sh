@@ -58,12 +58,12 @@ EOF
 (cd "$OUT" && xxd -i -n "${TEST}_ps" ps.dxbc >> "${TEST}_blobs.c")
 cat >> "$OUT/${TEST}_blobs.c" <<EOF
 
-const struct mythic_shader_blob mythic_shader_blobs[] = {
+const struct madeira_shader_blob madeira_shader_blobs[] = {
   { "${HLSL_NAME}", "vs_main", "vs_5_0", ${TEST}_vs, sizeof(${TEST}_vs) },
   { "${HLSL_NAME}", "ps_main", "ps_5_0", ${TEST}_ps, sizeof(${TEST}_ps) },
 };
-const unsigned int mythic_shader_blob_count =
-    sizeof(mythic_shader_blobs) / sizeof(mythic_shader_blobs[0]);
+const unsigned int madeira_shader_blob_count =
+    sizeof(madeira_shader_blobs) / sizeof(madeira_shader_blobs[0]);
 EOF
 
 # --- Build the test PE ---

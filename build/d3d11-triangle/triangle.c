@@ -3,7 +3,7 @@
 // vkd3d-shader) and embedded as C arrays — no runtime shader compiler
 // needed inside the PE, which keeps the Wine dep chain minimal.
 //
-// Cross-compiled as aarch64-windows PE for use inside Mythic's Wine.
+// Cross-compiled as aarch64-windows PE for use inside Madeira's Wine.
 
 #include <windows.h>
 #include <d3d11.h>
@@ -13,7 +13,7 @@
 #include "vs_dxbc.h"
 #include "ps_dxbc.h"
 
-static const char g_class_name[] = "MythicTriangleWnd";
+static const char g_class_name[] = "MadeiraTriangleWnd";
 
 static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_DESTROY) { PostQuitMessage(0); return 0; }
@@ -32,7 +32,7 @@ int main(int argc, char **argv) {
     wc.lpszClassName = g_class_name;
     RegisterClassA(&wc);
 
-    HWND hwnd = CreateWindowExA(0, g_class_name, "Mythic D3D11 Triangle",
+    HWND hwnd = CreateWindowExA(0, g_class_name, "Madeira D3D11 Triangle",
                                 WS_OVERLAPPEDWINDOW, 0, 0, 800, 600,
                                 NULL, NULL, wc.hInstance, NULL);
     ShowWindow(hwnd, SW_SHOW);

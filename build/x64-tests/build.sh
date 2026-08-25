@@ -5,7 +5,7 @@ set -e
 
 NAME="${1:-fib}"
 TOOLCHAIN="/Users/willfaust/Documents/ios-pc-game-claude/toolchains/llvm-mingw-20260421-ucrt-macos-universal/bin"
-APP_BUNDLE="/Users/willfaust/Documents/ios-pc-game-claude/app/Mythic/arm64ec-windows"
+APP_BUNDLE="/Users/willfaust/Documents/ios-pc-game-claude/app/Madeira/arm64ec-windows"
 
 cd "$(dirname "$0")"
 

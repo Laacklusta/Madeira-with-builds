@@ -5,7 +5,7 @@ BUILD_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$BUILD_DIR/../.." && pwd)"
 WINE_SRC="$REPO_ROOT/wine"
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-APP_LIB="$REPO_ROOT/app/Mythic/libwineserver.a"
+APP_LIB="$REPO_ROOT/app/Madeira/libwineserver.a"
 SHIMS_DIR="$REPO_ROOT/build/ntdll-unix/shims"
 
 # Object files and library go in build dir

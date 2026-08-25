@@ -1,4 +1,4 @@
-/* iOS-Mythic 2026-08-03 rev=ml470 (#79 transport): in-process NSI TCP
+/* iOS-Madeira 2026-08-03 rev=ml470 (#79 transport): in-process NSI TCP
  * connection tables.
  *
  * nsiproxy.sys is not shipped on iOS (no winedevice/driver stack), so PE

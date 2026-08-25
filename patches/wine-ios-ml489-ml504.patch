@@ -76,7 +76,7 @@ index 38def8a8abe..0b4fb883881 100644
          }
          if (event & (POLLERR | POLLHUP))
              post_socket_event( sock, AFD_POLL_BIT_CONNECT_ERR );
-+        /* iOS-Mythic ml493: the OUTCOME half of the [srv-conn] census.
++        /* iOS-Madeira ml493: the OUTCOME half of the [srv-conn] census.
 +         * ml493's log proved Steam dials the CMs (dport=443/27018, ret=-1
 +         * EINPROGRESS) yet not one appears ESTABLISHED, so every
 +         * PingWebSocketCM fails inside a second — but the dial census alone

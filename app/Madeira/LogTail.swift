@@ -9,7 +9,7 @@ final class LogTail {
     private var fd: Int32 = -1
     private var source: DispatchSourceFileSystemObject?
     private var pollTimer: DispatchSourceTimer?
-    private let queue = DispatchQueue(label: "com.mythic.logtail", qos: .utility)
+    private let queue = DispatchQueue(label: "com.madeira.logtail", qos: .utility)
     private var lineBuffer = Data()
     private var lastSize: off_t = 0
 

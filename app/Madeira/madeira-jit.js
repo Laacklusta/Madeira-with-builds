@@ -1,4 +1,4 @@
-// Mythic JIT Script for StikDebug
+// Madeira JIT Script for StikDebug
 // Handles BRK #0xf00d (universal protocol) with x16-based command dispatch.
 //
 // ml346 (v2): soft-signal stops (EXC_SOFT_SIGNAL) forward the ORIGINAL signo
@@ -45,9 +45,9 @@ function extractBrkImmediate(u32) {
 }
 
 let pid = get_pid();
-log(`Mythic JIT: pid = ${pid}`);
+log(`Madeira JIT: pid = ${pid}`);
 let attachResponse = send_command(`vAttach;${pid.toString(16)}`);
-log(`Mythic JIT: attached = ${attachResponse}`);
+log(`Madeira JIT: attached = ${attachResponse}`);
 
 // ml355: STOP SERVICING ANYTHING BUT BRK.
 //
@@ -55,7 +55,7 @@ log(`Mythic JIT: attached = ${attachResponse}`);
 // on StikDebug's side. Wine signals constantly (thread suspend/resume), so the
 // v2 script burned 27s CPU in ~60s and iOS killed StikDebug itself with the
 // scene-update watchdog (0x8BADF00D) — which tore down the debug session and
-// left Mythic to be SIGKILLed with no crash report. That is the "instant
+// left Madeira to be SIGKILLed with no crash report. That is the "instant
 // vanish, empty StikDebug log" the user kept seeing.
 //
 // Both packets below are best-effort; on an older stub they simply fail and
@@ -68,11 +68,11 @@ log(`Mythic JIT: attached = ${attachResponse}`);
 //     is deliberately EXCLUDED: BRK arrives that way and is our whole job.
 {
     let ign = send_command(`QSetIgnoredExceptions:EXC_BAD_ACCESS;EXC_BAD_INSTRUCTION`);
-    log(`Mythic JIT: QSetIgnoredExceptions -> ${ign || '(unsupported)'}`);
+    log(`Madeira JIT: QSetIgnoredExceptions -> ${ign || '(unsupported)'}`);
     let sigs = [];
     for (let s = 1; s <= 31; s++) if (s !== 5) sigs.push(s.toString(16));
     let pass = send_command(`QPassSignals:${sigs.join(';')}`);
-    log(`Mythic JIT: QPassSignals -> ${pass || '(unsupported)'}`);
+    log(`Madeira JIT: QPassSignals -> ${pass || '(unsupported)'}`);
 }
 
 let detached = false;
@@ -112,7 +112,7 @@ while (!detached) {
 
     // W/X = inferior exited; nothing left to debug.
     if (typeof brkResponse === 'string' && /^[WX]/.test(brkResponse)) {
-        ulog(`Mythic JIT: inferior exited (${brkResponse})`);
+        ulog(`Madeira JIT: inferior exited (${brkResponse})`);
         detached = true;
         continue;
     }
@@ -123,7 +123,7 @@ while (!detached) {
     let pc = pcMatch ? pcMatch.groups['reg'] : null;
 
     if (!tid || !pc) {
-        ulog(`Mythic JIT: failed to parse, continuing`);
+        ulog(`Madeira JIT: failed to parse, continuing`);
         continue;
     }
 
@@ -147,7 +147,7 @@ while (!detached) {
     if (metype === 5) {
         let signo = (medata.length > 1 && medata[1] >= 1 && medata[1] <= 31) ? medata[1] : 0;
         if (sigLogs < 8 || (sigLogs % 500) === 0) {
-            ulog(`Mythic JIT: soft-signal tid=${tid} pc=0x${pcNum.toString(16)} ` +
+            ulog(`Madeira JIT: soft-signal tid=${tid} pc=0x${pcNum.toString(16)} ` +
                 `signo=${signo || '?'} (#${sigLogs})`);
         }
         sigLogs++;
@@ -183,7 +183,7 @@ while (!detached) {
         // named, crashing an innocent thread at the worst moment. Log and
         // resume with no signal.
         if (metype === 11) {
-            ulog(`Mythic JIT: EXC_RESOURCE tid=${tid} kcode=${kcode.toString(16)} ` +
+            ulog(`Madeira JIT: EXC_RESOURCE tid=${tid} kcode=${kcode.toString(16)} ` +
                 `(memory HWM ${kcode & 0x1fff} MB?) — continuing, no signal`);
             let resp = send_command(`c`);
             if (looksLikeStop(resp)) pending = resp;
@@ -198,7 +198,7 @@ while (!detached) {
 
         if (faultLogs < 16) {
             faultLogs++;
-            ulog(`Mythic JIT: fault (not BRK) tid=${tid} pc=0x${pcNum.toString(16)} ` +
+            ulog(`Madeira JIT: fault (not BRK) tid=${tid} pc=0x${pcNum.toString(16)} ` +
                 `insn=${insnOk ? instrU32.toString(16).padStart(8, '0') : `<${instrHex}>`} ` +
                 `metype=${metype} kcode=${kcode.toString(16)} -> sig ${sig} (repeat ${faultRepeats})`);
         }
@@ -209,7 +209,7 @@ while (!detached) {
         // main thread exactly this way). If the fault truly cannot be
         // delivered, kill the inferior — a visible death with logs intact.
         if (faultRepeats >= 8) {
-            ulog(`Mythic JIT: fault at pc=0x${pcNum.toString(16)} undeliverable after ` +
+            ulog(`Madeira JIT: fault at pc=0x${pcNum.toString(16)} undeliverable after ` +
                 `${faultRepeats} tries — killing inferior (visible death beats a parked thread)`);
             send_command(`k`);
             detached = true;
@@ -245,7 +245,7 @@ while (!detached) {
         continue;
     }
 
-    ulog(`Mythic JIT: BRK #0x${brkImm.toString(16)}`);
+    ulog(`Madeira JIT: BRK #0x${brkImm.toString(16)}`);
 
     // Parse x0 and x1
     let x0Match = /00:(?<reg>[0-9a-f]{16});/.exec(brkResponse);
@@ -255,30 +255,30 @@ while (!detached) {
     let x16Num = littleEndianHexStringToNumber(x16);
 
     if (brkImm === 0xf00d) {
-        ulog(`Mythic JIT: x16 = ${x16Num}`);
+        ulog(`Madeira JIT: x16 = ${x16Num}`);
 
         if (x16Num === 0n) {
             // CMD_DETACH
-            ulog(`Mythic JIT: detach`);
+            ulog(`Madeira JIT: detach`);
             send_command(`D`);
             detached = true;
 
         } else if (x16Num === 1n) {
             // CMD_PREPARE_REGION
-            ulog(`Mythic JIT: prepare addr=0x${x0.toString(16)} size=0x${x1.toString(16)}`);
+            ulog(`Madeira JIT: prepare addr=0x${x0.toString(16)} size=0x${x1.toString(16)}`);
 
             let addr = x0;
             if (x0 === 0n && x1 !== 0n) {
                 let allocResp = send_command(`_M${x1.toString(16)},rx`);
                 if (allocResp && allocResp.length > 0) {
                     addr = BigInt(`0x${allocResp}`);
-                    ulog(`Mythic JIT: allocated at 0x${addr.toString(16)}`);
+                    ulog(`Madeira JIT: allocated at 0x${addr.toString(16)}`);
                 }
             }
 
             if (addr !== 0n && x1 !== 0n) {
                 let prepResp = prepare_memory_region(addr, x1);
-                ulog(`Mythic JIT: prepared = ${prepResp}`);
+                ulog(`Madeira JIT: prepared = ${prepResp}`);
             }
 
             send_command(`P0=${numberToLittleEndianHexString(addr)};thread:${tid};`);
@@ -288,7 +288,7 @@ while (!detached) {
             // x0 = TEB address, x1 = size (0x4000 = 16KB iOS page)
             // The app can't map page 0 itself (kernel refuses). The debugger
             // may have different privileges to create this mapping.
-            ulog(`Mythic JIT: map page zero, TEB=0x${x0.toString(16)} size=0x${x1.toString(16)}`);
+            ulog(`Madeira JIT: map page zero, TEB=0x${x0.toString(16)} size=0x${x1.toString(16)}`);
 
             let success = 0n;
 
@@ -310,7 +310,7 @@ while (!detached) {
                 if (tebData && tebData.length > 0) {
                     // Write it to address 0+tebOff
                     let writeResp = send_command(`M${tebOff.toString(16)},${(tebData.length/2).toString(16)}:${tebData}`);
-                    ulog(`Mythic JIT: write TEB to page0 offset 0x${tebOff.toString(16)}: ${writeResp}`);
+                    ulog(`Madeira JIT: write TEB to page0 offset 0x${tebOff.toString(16)}: ${writeResp}`);
                     if (writeResp === 'OK') {
                         success = 1n;
                     }
@@ -322,7 +322,7 @@ while (!detached) {
 
     } else if (brkImm === 0x69) {
         // Legacy protocol
-        ulog(`Mythic JIT: legacy BRK 0x69, x0=0x${x0.toString(16)}`);
+        ulog(`Madeira JIT: legacy BRK 0x69, x0=0x${x0.toString(16)}`);
         if (x0 !== 0n) {
             prepare_memory_region(x0, x0);
         }

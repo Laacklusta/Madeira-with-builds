@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		A1000001 /* MythicApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001 /* MythicApp.swift */; };
+		A1000001 /* MadeiraApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001 /* MadeiraApp.swift */; };
 		A1000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000002 /* ContentView.swift */; };
 		A1000003 /* LogStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000003 /* LogStore.swift */; };
 		A1000004 /* JITAllocator.c in Sources */ = {isa = PBXBuildFile; fileRef = A2000004 /* JITAllocator.c */; };
@@ -54,15 +54,15 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		A2000001 /* MythicApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MythicApp.swift; sourceTree = "<group>"; };
+		A2000001 /* MadeiraApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MadeiraApp.swift; sourceTree = "<group>"; };
 		A2000002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A2000003 /* LogStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogStore.swift; sourceTree = "<group>"; };
 		A2000004 /* JITAllocator.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = JITAllocator.c; sourceTree = "<group>"; };
 		A2000005 /* JITAllocator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JITAllocator.h; sourceTree = "<group>"; };
-		A2000006 /* Mythic-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Mythic-Bridging-Header.h"; sourceTree = "<group>"; };
-		A2000007 /* Mythic.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Mythic.entitlements; sourceTree = "<group>"; };
+		A2000006 /* Madeira-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Madeira-Bridging-Header.h"; sourceTree = "<group>"; };
+		A2000007 /* Madeira.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Madeira.entitlements; sourceTree = "<group>"; };
 		A2000008 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		A2000009 /* Mythic.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Mythic.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A2000009 /* Madeira.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Madeira.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A200000A /* EntitlementChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EntitlementChecker.swift; sourceTree = "<group>"; };
 		A200000B /* FEXBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = FEXBridge.mm; sourceTree = "<group>"; };
 		A200000C /* FEXBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FEXBridge.h; sourceTree = "<group>"; };
@@ -147,16 +147,16 @@
 		A4000001 = {
 			isa = PBXGroup;
 			children = (
-				A4000002 /* Mythic */,
+				A4000002 /* Madeira */,
 				A4000004 /* Libraries */,
 				A4000003 /* Products */,
 			);
 			sourceTree = "<group>";
 		};
-		A4000002 /* Mythic */ = {
+		A4000002 /* Madeira */ = {
 			isa = PBXGroup;
 			children = (
-				A2000001 /* MythicApp.swift */,
+				A2000001 /* MadeiraApp.swift */,
 				A2000002 /* ContentView.swift */,
 				A2000003 /* LogStore.swift */,
 				A2000200 /* LogPattern.swift */,
@@ -185,17 +185,17 @@
 				A2000070 /* Winios/Winios.m */,
 				A2000071 /* Winios/Winios.h */,
 				A2000034 /* wine_stubs.c */,
-				A2000006 /* Mythic-Bridging-Header.h */,
-				A2000007 /* Mythic.entitlements */,
+				A2000006 /* Madeira-Bridging-Header.h */,
+				A2000007 /* Madeira.entitlements */,
 				A2000008 /* Info.plist */,
 			);
-			path = Mythic;
+			path = Madeira;
 			sourceTree = "<group>";
 		};
 		A4000003 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				A2000009 /* Mythic.app */,
+				A2000009 /* Madeira.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -232,9 +232,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		A5000001 /* Mythic */ = {
+		A5000001 /* Madeira */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = A7000003 /* Build configuration list for PBXNativeTarget "Mythic" */;
+			buildConfigurationList = A7000003 /* Build configuration list for PBXNativeTarget "Madeira" */;
 			buildPhases = (
 				A3000002 /* Sources */,
 				A3000001 /* Frameworks */,
@@ -244,9 +244,9 @@
 			);
 			dependencies = (
 			);
-			name = Mythic;
-			productName = Mythic;
-			productReference = A2000009 /* Mythic.app */;
+			name = Madeira;
+			productName = Madeira;
+			productReference = A2000009 /* Madeira.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -264,7 +264,7 @@
 					};
 				};
 			};
-			buildConfigurationList = A7000001 /* Build configuration list for PBXProject "Mythic" */;
+			buildConfigurationList = A7000001 /* Build configuration list for PBXProject "Madeira" */;
 			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -277,7 +277,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				A5000001 /* Mythic */,
+				A5000001 /* Madeira */,
 			);
 		};
 /* End PBXProject section */
@@ -303,7 +303,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A1000001 /* MythicApp.swift in Sources */,
+				A1000001 /* MadeiraApp.swift in Sources */,
 				A1000002 /* ContentView.swift in Sources */,
 				A1000003 /* LogStore.swift in Sources */,
 				A1000200 /* LogPattern.swift in Sources */,
@@ -390,7 +390,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = Mythic/Mythic.entitlements;
+				CODE_SIGN_ENTITLEMENTS = Madeira/Madeira.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -409,7 +409,7 @@
 					"$(SRCROOT)/../FEX/build-ios/FEXCore/Source",
 					"$(SRCROOT)/../FEX",
 				);
-				INFOPLIST_FILE = Mythic/Info.plist;
+				INFOPLIST_FILE = Madeira/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -423,7 +423,7 @@
 					"$(SRCROOT)/../FEX/build-ios/External/cephes",
 					"$(SRCROOT)/../FEX/build-ios/External/xxhash/cmake_unofficial",
 					"$(SRCROOT)/../FEX/build-ios/External/SoftFloat-3e",
-					"$(SRCROOT)/Mythic",
+					"$(SRCROOT)/Madeira",
 				);
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.willfaust.mythicemu;
@@ -432,7 +432,7 @@
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "Mythic/Mythic-Bridging-Header.h";
+				SWIFT_OBJC_BRIDGING_HEADER = "Madeira/Madeira-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -442,7 +442,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = Mythic/Mythic.entitlements;
+				CODE_SIGN_ENTITLEMENTS = Madeira/Madeira.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = UT49TA9TA4;
@@ -460,7 +460,7 @@
 					"$(SRCROOT)/../FEX/build-ios/FEXCore/Source",
 					"$(SRCROOT)/../FEX",
 				);
-				INFOPLIST_FILE = Mythic/Info.plist;
+				INFOPLIST_FILE = Madeira/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -474,7 +474,7 @@
 					"$(SRCROOT)/../FEX/build-ios/External/cephes",
 					"$(SRCROOT)/../FEX/build-ios/External/xxhash/cmake_unofficial",
 					"$(SRCROOT)/../FEX/build-ios/External/SoftFloat-3e",
-					"$(SRCROOT)/Mythic",
+					"$(SRCROOT)/Madeira",
 				);
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.willfaust.mythicemu;
@@ -482,7 +482,7 @@
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "Mythic/Mythic-Bridging-Header.h";
+				SWIFT_OBJC_BRIDGING_HEADER = "Madeira/Madeira-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -491,7 +491,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		A7000001 /* Build configuration list for PBXProject "Mythic" */ = {
+		A7000001 /* Build configuration list for PBXProject "Madeira" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				A8000001 /* Debug */,
@@ -500,7 +500,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		A7000003 /* Build configuration list for PBXNativeTarget "Mythic" */ = {
+		A7000003 /* Build configuration list for PBXNativeTarget "Madeira" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				A8000003 /* Debug */,

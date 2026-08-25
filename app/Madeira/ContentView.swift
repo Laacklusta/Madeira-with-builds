@@ -159,7 +159,7 @@ final class MetalBackedView: UIView {
         winios_set_compositor_frame(full.minX, full.minY, full.width, full.height)
         if !Self.layerRegistered {
             Self.layerRegistered = true
-            mythic_display_set_layer(host.metalLayer)
+            madeira_display_set_layer(host.metalLayer)
             LogStore.shared.log("MetalLayer registered with DXMT shim (window-hosted singleton)", level: .success)
         }
     }
@@ -220,7 +220,7 @@ final class MetalBackedView: UIView {
     private let F_WHEEL: UInt32 = 0x800, F_ABS: UInt32 = 0x8000
 
     private var desktopMode: Bool {
-        guard let v = getenv("MYTHIC_DESKTOP") else { return false }
+        guard let v = getenv("MADEIRA_DESKTOP") else { return false }
         return v.pointee == 49  // '1'
     }
     private func envInt(_ name: String, _ def: Int) -> Int {
@@ -353,8 +353,8 @@ final class MetalBackedView: UIView {
         }
 
         let sens = CGFloat(InputSettings.shared.sensAbs)   // desktop px per view pt
-        let maxX = CGFloat(envInt("MYTHIC_SCREEN_W", 1024) - 1)
-        let maxY = CGFloat(envInt("MYTHIC_SCREEN_H", 768) - 1)
+        let maxX = CGFloat(envInt("MADEIRA_SCREEN_W", 1024) - 1)
+        let maxY = CGFloat(envInt("MADEIRA_SCREEN_H", 768) - 1)
         Self.cursor.x = min(max(Self.cursor.x + dx * sens, 0), maxX)
         Self.cursor.y = min(max(Self.cursor.y + dy * sens, 0), maxY)
         postPointer(F_MOVE | F_ABS)
@@ -804,7 +804,7 @@ final class InputSettings: ObservableObject {
     @Published var sensRel:  Double = 2.0  { didSet { save() } }
     /// ml649: heavy diagnostics. Default OFF so the shipped default is the fast
     /// path; flip it on only when a run needs to be explainable.
-    @Published var diagnostics = false { didSet { mythic_set_diag_enabled(diagnostics ? 1 : 0); save() } }
+    @Published var diagnostics = false { didSet { madeira_set_diag_enabled(diagnostics ? 1 : 0); save() } }
 
     /// didSet fires for assignments made in init() because the properties are
     /// already initialised by then; without this the first launch would write
@@ -813,7 +813,7 @@ final class InputSettings: ObservableObject {
 
     private static var url: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("mythic-input.json")
+            .appendingPathComponent("madeira-input.json")
     }
 
     private init() {
@@ -826,7 +826,7 @@ final class InputSettings: ObservableObject {
             diagnostics = j["diagnostics"] as? Bool ?? false
         }
         loading = false
-        mythic_set_diag_enabled(diagnostics ? 1 : 0)   // push the restored value down
+        madeira_set_diag_enabled(diagnostics ? 1 : 0)   // push the restored value down
     }
 
     private func save() {
@@ -837,7 +837,7 @@ final class InputSettings: ObservableObject {
     }
 }
 
-struct MythicMetalView: UIViewRepresentable {
+struct MadeiraMetalView: UIViewRepresentable {
     func makeUIView(context: Context) -> MetalBackedView {
         return MetalBackedView(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
     }
@@ -883,7 +883,7 @@ struct ContentView: View {
             // this if/else (two SwiftUI identities) — HARMLESS since
             // 2026-07-05: MetalHostView is a process-lifetime singleton;
             // a fresh placeholder only re-parents the same CAMetalLayer.
-            .navigationTitle("Mythic")
+            .navigationTitle("Madeira")
             .navigationBarTitleDisplayMode(.inline)
             .navigationBarHidden(vSizeClass == .compact)
             .onAppear {
@@ -916,7 +916,7 @@ struct ContentView: View {
             }
             .padding(.horizontal, 8)
             .padding(.bottom, 4)
-            MythicMetalView()
+            MadeiraMetalView()
                 .frame(height: 240)
                 .background(Color.black)
                 .onAppear { TouchControlsHost.attach() }
@@ -972,7 +972,7 @@ struct ContentView: View {
             let barW = max((geo.size.width - gameW) / 2.0, 44)
             ZStack {
                 Color.black
-                MythicMetalView()
+                MadeiraMetalView()
                 // Controls removed for now (ml586): game-only landscape.
                 // The FPS readout stays, pinned in the right pillarbox bar —
                 // the window-level surface covers anything drawn over the
@@ -1179,7 +1179,7 @@ struct ContentView: View {
                     // ml591: the phase question is ANSWERED, so the per-event
                     // probe goes back off — it distorts the very budget step 2
                     // measures. [sock-tl] replaces it and needs no env var.
-                    unsetenv("MYTHIC_SOCK_WIRE")
+                    unsetenv("MADEIRA_SOCK_WIRE")
                     // ml594 A/B: post-login hang = FEX optimizer NONTERMINATION.
                     // Chrome_InProcRendererThread (wtid 0208) sampled 9x at
                     // 97-100% CPU (cpu=277 -> 918, run=1) inside
@@ -1228,7 +1228,7 @@ struct ContentView: View {
                     // miscompilation-shaped fault, so ml597 convicts nothing.
                     //   crashes again -> the REBUILD is at fault, DFE still untested
                     //   runs fine     -> disabling DFE is what breaks it
-                    unsetenv("MYTHIC_NO_DFE")
+                    unsetenv("MADEIRA_NO_DFE")
                     // ml599: name the pass that corrupts the IR list.
                     //
                     // ml598 settled the mechanism: FEX hangs walking a block
@@ -1252,7 +1252,7 @@ struct ContentView: View {
                     // cheap backward check at DFE and RA entry, the repair, and the
                     // bounded-walk guards. Only the attribution sweep is disabled.
                     // Set it again for a run that is specifically hunting the corrupter.
-                    unsetenv("MYTHIC_IR_TOPO")
+                    unsetenv("MADEIRA_IR_TOPO")
                     // ml623: TARGETED IR/RA CAPTURE for the ULTRAKILL Mono wall.
                     //
                     // FEX miscompiles ONE instruction in Mono's x86-64 emitter:
@@ -1269,26 +1269,26 @@ struct ContentView: View {
                     // pass, RA liveness, or the ARM emitter.
                     //
                     // Compile-time only, capped at 4 captures. Unset it for a normal run.
-                    setenv("MYTHIC_IRCAP_RVA", "0x4db25b", 1)
-                    setenv("MYTHIC_IRCAP_MODULE", "mono-2.0-bdwgc.dll", 1)
-                    setenv("MYTHIC_EXE", "explorer.exe", 1)
-                    setenv("MYTHIC_ARGS",
+                    setenv("MADEIRA_IRCAP_RVA", "0x4db25b", 1)
+                    setenv("MADEIRA_IRCAP_MODULE", "mono-2.0-bdwgc.dll", 1)
+                    setenv("MADEIRA_EXE", "explorer.exe", 1)
+                    setenv("MADEIRA_ARGS",
                            "/desktop=shell,\(deskW)x\(deskH) cmd /c C:\\steam-launch.bat", 1)
-                    setenv("MYTHIC_DESKTOP", "1", 1)
-                    setenv("MYTHIC_SCREEN_W", String(deskW), 1)
-                    setenv("MYTHIC_SCREEN_H", String(deskH), 1)
+                    setenv("MADEIRA_DESKTOP", "1", 1)
+                    setenv("MADEIRA_SCREEN_W", String(deskW), 1)
+                    setenv("MADEIRA_SCREEN_H", String(deskH), 1)
                     // ml371: surfdump ground truth — the "frozen desktop"
                     // question (fresh pixels never presented vs nothing
                     // painting upstream) is undecidable from the log alone
                     // because the [winios] present line caps at 12.
                     // ml556: surface PNG dumping also off for the clean baseline —
                     // it encodes a PNG on the present path. Restore "1" to re-enable.
-                    unsetenv("MYTHIC_DUMP_SURFACES")
+                    unsetenv("MADEIRA_DUMP_SURFACES")
                     // ml493: bursts of N CONSECUTIVE frames per window. The
                     // login window's black regions change every frame, which
                     // the 2s-throttled first/latest dump can never show —
                     // adjacent frames are the only way to measure what moves.
-                    setenv("MYTHIC_SURF_SEQ", "10", 1)
+                    setenv("MADEIRA_SURF_SEQ", "10", 1)
                     // ml515: SRCWATCH RE-ENABLED, now hooked in the MACH
                     // exception handler (where guest faults are actually
                     // delivered) instead of segv_handler. It consumes its own
@@ -1331,8 +1331,8 @@ struct ContentView: View {
                     // already caught the free_async_queue over-release (ml574) and that
                     // fix is shipped; leaving the detector armed just starves the server,
                     // and Steam allows each CM ping only 1000 ms. Set to "1" to re-arm.
-                    setenv("MYTHIC_DEAD_RELEASE", "0", 1)
-                    setenv("MYTHIC_SRCWATCH", "off", 1)
+                    setenv("MADEIRA_DEAD_RELEASE", "0", 1)
+                    setenv("MADEIRA_SRCWATCH", "off", 1)
                     // ml548: restrict srcwatch to the row band where displacement
                     // was actually MEASURED, so the 400-attribution budget is not
                     // spent on the full-frame clear (which touches every page
@@ -1346,7 +1346,7 @@ struct ContentView: View {
                     // Widen to most of the surface so the watch follows whatever
                     // the frame actually draws; the per-page budget still bounds
                     // the fault cost.
-                    setenv("MYTHIC_SRCWATCH_ROWS", "0,400", 1)
+                    setenv("MADEIRA_SRCWATCH_ROWS", "0,400", 1)
                     // ml527 (#82 RETEST, ONE VARIABLE): run V8 with its JIT on.
                     //
                     // ml526's phase timeline made the case concrete — of ~39s to
@@ -1383,7 +1383,7 @@ struct ContentView: View {
                     // reach it.
                     //
                     // Flip to "0" only alongside a fix for the post-BrowserReady death.
-                    setenv("MYTHIC_JITLESS", "1", 1)
+                    setenv("MADEIRA_JITLESS", "1", 1)
                     // ml514 note (kept for the record): The ml514 watch
                     // armed correctly (76 pages protected) but logged ZERO
                     // faults and produced an all-black window on two runs: the
@@ -1401,7 +1401,7 @@ struct ContentView: View {
                     // round). It answered its question in ml503/ml504 —
                     // untouched=0 on the login window proved Chromium writes
                     // every pixel — so it must not ship enabled. Re-enable
-                    // with MYTHIC_SURF_SENTINEL=1 if the question returns.
+                    // with MADEIRA_SURF_SENTINEL=1 if the question returns.
                     runWineFullSequence()
                 }
                 .buttonStyle(.borderedProminent)
@@ -1427,12 +1427,12 @@ struct ContentView: View {
                     // RPC_Init, OpenSCManager fails → watch whether that
                     // fails fast or hits the RaiseException→CS wedge again.
                     let deskW = 960, deskH = 540
-                    setenv("MYTHIC_EXE", "explorer.exe", 1)
-                    setenv("MYTHIC_ARGS",
+                    setenv("MADEIRA_EXE", "explorer.exe", 1)
+                    setenv("MADEIRA_ARGS",
                            "/desktop=shell,\(deskW)x\(deskH) C:\\windows\\system32\\services.exe", 1)
-                    setenv("MYTHIC_DESKTOP", "1", 1)
-                    setenv("MYTHIC_SCREEN_W", String(deskW), 1)
-                    setenv("MYTHIC_SCREEN_H", String(deskH), 1)
+                    setenv("MADEIRA_DESKTOP", "1", 1)
+                    setenv("MADEIRA_SCREEN_W", String(deskW), 1)
+                    setenv("MADEIRA_SCREEN_H", String(deskH), 1)
                     runWineFullSequence()
                 }
                 .buttonStyle(.borderedProminent)
@@ -1442,18 +1442,18 @@ struct ContentView: View {
                     // Game lives at Documents/wine/drive_c/Program Files/Thumper/
                     // (push via scripts/deploy-thumper.sh during development;
                     // bundled as resource for distribution later).
-                    setenv("MYTHIC_EXE",
+                    setenv("MADEIRA_EXE",
                            "C:\\Program Files\\Thumper\\THUMPER_win10.exe", 1)
-                    unsetenv("MYTHIC_ARGS")
-                    unsetenv("MYTHIC_DESKTOP")
+                    unsetenv("MADEIRA_ARGS")
+                    unsetenv("MADEIRA_DESKTOP")
                     runWineFullSequence()
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.pink)
 
                 Button("x64 DX11 cube") {
-                    setenv("MYTHIC_EXE", "cube-x64.exe", 1)
-                    unsetenv("MYTHIC_ARGS")
+                    setenv("MADEIRA_EXE", "cube-x64.exe", 1)
+                    unsetenv("MADEIRA_ARGS")
                     runWineFullSequence()
                 }
                 .buttonStyle(.borderedProminent)
@@ -1467,9 +1467,9 @@ struct ContentView: View {
                 // Each clock is checked separately so a partial failure names
                 // itself: QPC passing alone is the shared-page signature.
                 Button("x64 clock test") {
-                    setenv("MYTHIC_EXE", "clocktest-x64.exe", 1)
-                    unsetenv("MYTHIC_ARGS")
-                    unsetenv("MYTHIC_DESKTOP")
+                    setenv("MADEIRA_EXE", "clocktest-x64.exe", 1)
+                    unsetenv("MADEIRA_ARGS")
+                    unsetenv("MADEIRA_DESKTOP")
                     runWineFullSequence()
                 }
                 .buttonStyle(.borderedProminent)
@@ -1818,32 +1818,32 @@ struct ContentView: View {
             // SIZE is the cost, not its usage. The VA floor is no longer a
             // hand-paired constant (ml668 derives it from the pool actually
             // allocated), so changing this is now a one-line change.
-            // Override lives in Documents/mythic-pool.txt (a bare number of MB)
+            // Override lives in Documents/madeira-pool.txt (a bare number of MB)
             // so it can be swapped between runs without a rebuild, and deleting
             // the file reverts to the proven default. Clamped to sane values --
             // a typo here would otherwise move the VA floor with it.
             var poolSizeMB = 896
             if let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
-               let txt = try? String(contentsOf: d.appendingPathComponent("mythic-pool.txt"), encoding: .utf8),
+               let txt = try? String(contentsOf: d.appendingPathComponent("madeira-pool.txt"), encoding: .utf8),
                let mb = Int(txt.trimmingCharacters(in: .whitespacesAndNewlines)),
                mb >= 256, mb <= 1152 {
                 poolSizeMB = mb
-                logStore.log("JIT pool overridden to \(mb)MB via mythic-pool.txt")
+                logStore.log("JIT pool overridden to \(mb)MB via madeira-pool.txt")
             }
-            // ml694: W^X A/B switch. Documents/mythic-wx.txt containing "0"
+            // ml694: W^X A/B switch. Documents/madeira-wx.txt containing "0"
             // disables page demotion for the SAME binary, so the on/off
             // comparison needs one rebuild, not two. The previous gate read
             // container paths that can never exist, so it silently forced
             // ENABLED and no A/B was actually possible.
             if let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
-               let txt = try? String(contentsOf: d.appendingPathComponent("mythic-wx.txt"), encoding: .utf8) {
+               let txt = try? String(contentsOf: d.appendingPathComponent("madeira-wx.txt"), encoding: .utf8) {
                 let v = txt.trimmingCharacters(in: .whitespacesAndNewlines)
-                setenv("MYTHIC_WX", v, 1)
-                logStore.log("W^X override: MYTHIC_WX=\(v) via mythic-wx.txt")
+                setenv("MADEIRA_WX", v, 1)
+                logStore.log("W^X override: MADEIRA_WX=\(v) via madeira-wx.txt")
             }
 
-            // ml727: wine-mono backpatcher bridge A/B. Documents/mythic-mono-bridge.txt
-            // == "1" sets MYTHIC_WINEMONO_BRIDGE, which arms FEX's Mono code-patching
+            // ml727: wine-mono backpatcher bridge A/B. Documents/madeira-mono-bridge.txt
+            // == "1" sets MADEIRA_WINEMONO_BRIDGE, which arms FEX's Mono code-patching
             // optimisation for wine-mono (recognised since ml712 but activation left
             // opt-in because the bridge reclassifies an XCHG from a true atomic exchange
             // into an alias-directed plain write).
@@ -1852,29 +1852,29 @@ struct ContentView: View {
             // what FEX generates for a guest XCHG, and the patching XCHGs sit inside
             // libmono -- so the bridge's "RIP must lie inside Mono" test should pass.
             if let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
-               let txt = try? String(contentsOf: d.appendingPathComponent("mythic-mono-bridge.txt"), encoding: .utf8) {
+               let txt = try? String(contentsOf: d.appendingPathComponent("madeira-mono-bridge.txt"), encoding: .utf8) {
                 let v = txt.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !v.isEmpty {
-                    setenv("MYTHIC_WINEMONO_BRIDGE", v, 1)
-                    logStore.log("Mono bridge: MYTHIC_WINEMONO_BRIDGE=\(v) via mythic-mono-bridge.txt")
+                    setenv("MADEIRA_WINEMONO_BRIDGE", v, 1)
+                    logStore.log("Mono bridge: MADEIRA_WINEMONO_BRIDGE=\(v) via madeira-mono-bridge.txt")
                 }
             }
 
-            // ml716: syscall-frame context A/B. Documents/mythic-ctx-frame.txt == "1"
+            // ml716: syscall-frame context A/B. Documents/madeira-ctx-frame.txt == "1"
             // makes ios_fill_thread_context() report a thread parked inside a syscall
             // using its saved Wine syscall frame (TEB+0x378) instead of the Mach-O
             // registers it happens to be executing. Off by default; native code reads
             // only the environment variable.
             if let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
-               let txt = try? String(contentsOf: d.appendingPathComponent("mythic-ctx-frame.txt"), encoding: .utf8) {
+               let txt = try? String(contentsOf: d.appendingPathComponent("madeira-ctx-frame.txt"), encoding: .utf8) {
                 let v = txt.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !v.isEmpty {
-                    setenv("MYTHIC_CTX_FRAME", v, 1)
-                    logStore.log("Context source: MYTHIC_CTX_FRAME=\(v) via mythic-ctx-frame.txt")
+                    setenv("MADEIRA_CTX_FRAME", v, 1)
+                    logStore.log("Context source: MADEIRA_CTX_FRAME=\(v) via madeira-ctx-frame.txt")
                 }
             }
 
-            // ml734: Theorafile call tracer. Documents/mythic-tf-trace.txt == "1"
+            // ml734: Theorafile call tracer. Documents/madeira-tf-trace.txt == "1"
             // redirects libtheorafile's tf_* exports through wrappers in
             // tftrace-x64.dll that call the original and report the RETURN
             // value. The intro decodes and plays, the stream reaches a clean
@@ -1883,15 +1883,15 @@ struct ContentView: View {
             // count cannot tell "tf_eos returns false forever" from "it returns
             // true and the managed side ignores it". Only the return value can.
             if let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
-               let txt = try? String(contentsOf: d.appendingPathComponent("mythic-tf-trace.txt"), encoding: .utf8) {
+               let txt = try? String(contentsOf: d.appendingPathComponent("madeira-tf-trace.txt"), encoding: .utf8) {
                 let v = txt.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !v.isEmpty {
-                    setenv("MYTHIC_TF_TRACE", v, 1)
-                    logStore.log("Theorafile tracer: MYTHIC_TF_TRACE=\(v) via mythic-tf-trace.txt")
+                    setenv("MADEIRA_TF_TRACE", v, 1)
+                    logStore.log("Theorafile tracer: MADEIRA_TF_TRACE=\(v) via madeira-tf-trace.txt")
                 }
             }
 
-            // ml731: Windows shared-data clock A/B. Documents/mythic-usd-time.txt == "1"
+            // ml731: Windows shared-data clock A/B. Documents/madeira-usd-time.txt == "1"
             // makes wineserver update KUSER_SHARED_DATA's SystemTime, InterruptTime
             // and TickCount again. Without it those stay frozen at their init values,
             // so GetTickCount/Environment.TickCount/DateTime.UtcNow never advance and
@@ -1899,15 +1899,15 @@ struct ContentView: View {
             // renderer keeps drawing. Opt-in only because the old code claimed the
             // write faulted; this should become unconditional once proven.
             if let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
-               let txt = try? String(contentsOf: d.appendingPathComponent("mythic-usd-time.txt"), encoding: .utf8) {
+               let txt = try? String(contentsOf: d.appendingPathComponent("madeira-usd-time.txt"), encoding: .utf8) {
                 let v = txt.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !v.isEmpty {
-                    setenv("MYTHIC_USD_TIME", v, 1)
-                    logStore.log("Shared-data clock: MYTHIC_USD_TIME=\(v) via mythic-usd-time.txt")
+                    setenv("MADEIRA_USD_TIME", v, 1)
+                    logStore.log("Shared-data clock: MADEIRA_USD_TIME=\(v) via madeira-usd-time.txt")
                 }
             }
 
-            // ml730: REAL thread suspension A/B. Documents/mythic-real-suspend.txt == "1"
+            // ml730: REAL thread suspension A/B. Documents/madeira-real-suspend.txt == "1"
             // makes a Wine suspend actually stop the Mach thread and keep it stopped
             // until the matching resume, instead of only snapshotting its registers
             // and bumping a counter while the target keeps running.
@@ -1918,15 +1918,15 @@ struct ContentView: View {
             // can deadlock whoever suspended it. Windows apps tolerate preemptive suspend
             // because the suspender does not share their heap; here it does.
             if let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
-               let txt = try? String(contentsOf: d.appendingPathComponent("mythic-real-suspend.txt"), encoding: .utf8) {
+               let txt = try? String(contentsOf: d.appendingPathComponent("madeira-real-suspend.txt"), encoding: .utf8) {
                 let v = txt.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !v.isEmpty {
-                    setenv("MYTHIC_REAL_SUSPEND", v, 1)
-                    logStore.log("Thread suspension: MYTHIC_REAL_SUSPEND=\(v) via mythic-real-suspend.txt")
+                    setenv("MADEIRA_REAL_SUSPEND", v, 1)
+                    logStore.log("Thread suspension: MADEIRA_REAL_SUSPEND=\(v) via madeira-real-suspend.txt")
                 }
             }
 
-            // ml713: Mono suspend-policy A/B. Documents/mythic-mono-suspend.txt
+            // ml713: Mono suspend-policy A/B. Documents/madeira-mono-suspend.txt
             // containing "preemptive" (or "coop"/"hybrid") sets MONO_THREADS_SUSPEND
             // for wine-mono, so the comparison needs no rebuild.
             //
@@ -1940,11 +1940,11 @@ struct ContentView: View {
             // trade a deadlock for a worse failure. If it does get in-game, that is NOT
             // evidence for any particular theory of the deadlock.
             if let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
-               let txt = try? String(contentsOf: d.appendingPathComponent("mythic-mono-suspend.txt"), encoding: .utf8) {
+               let txt = try? String(contentsOf: d.appendingPathComponent("madeira-mono-suspend.txt"), encoding: .utf8) {
                 let v = txt.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !v.isEmpty {
                     setenv("MONO_THREADS_SUSPEND", v, 1)
-                    logStore.log("Mono suspend policy: MONO_THREADS_SUSPEND=\(v) via mythic-mono-suspend.txt")
+                    logStore.log("Mono suspend policy: MONO_THREADS_SUSPEND=\(v) via madeira-mono-suspend.txt")
                 }
             }
 
@@ -1994,7 +1994,7 @@ struct ContentView: View {
             //
             // Safe NOW and not before: ml522/ml523 made US the task-level Mach handler
             // for bad-access + bad-instruction + breakpoint, so the fault backstop that
-            // used to require a live debugger (mythic-jit.js: "NEVER detach here ... every
+            // used to require a live debugger (madeira-jit.js: "NEVER detach here ... every
             // later escalated fault parks its thread forever", the ml345 wedge) is ours.
             // And all executable memory already comes from the pool granted above —
             // virtual_ios.c copies every PE .text into it rather than mprotecting,
@@ -2067,16 +2067,16 @@ struct ContentView: View {
                 // loop actually observes so that can't happen silently again.
                 if now - lastHeartbeat > 30 {
                     lastHeartbeat = now
-                    logStore.log("detach-wait: presents=\(mythic_get_present_count()) running=\(wine_process_is_running()) elapsed=\(Int(now - pollStart))s")
+                    logStore.log("detach-wait: presents=\(madeira_get_present_count()) running=\(wine_process_is_running()) elapsed=\(Int(now - pollStart))s")
                 }
                 // Task #25: the present heuristic is meaningless in desktop
                 // mode — ANY child presenting (cube, a game window) trips it
                 // mid-session, and later program launches still need the
                 // attached-debugger facilities. Desktop sessions stay
                 // attached until the desktop exits (or the safety cap).
-                let isDesktopSession = getenv("MYTHIC_DESKTOP").map { $0.pointee == 49 } ?? false
+                let isDesktopSession = getenv("MADEIRA_DESKTOP").map { $0.pointee == 49 } ?? false
                 if !isDesktopSession {
-                    if presentingSince == nil && mythic_get_present_count() >= 1 {
+                    if presentingSince == nil && madeira_get_present_count() >= 1 {
                         presentingSince = now
                         logStore.log("Game is presenting (#1, splash) — early detach in \(Int(settleAfterFirstPresent))s")
                     }
@@ -2147,7 +2147,7 @@ struct ContentView: View {
 
         let bat = """
         @echo off\r
-        rem Generated by Mythic (ml589) — do not hand-edit; rewritten every launch.\r
+        rem Generated by Madeira (ml589) — do not hand-edit; rewritten every launch.\r
         start "" "C:\\windows\\system32\\services.exe"\r
         cd /d "\(winDir)"\r
         "\(winDir)\\steam.exe" -no-cef-sandbox -cef-disable-gpu -console -nocrashmonitor -cef-disable-features=SegmentationPlatform,OptimizationTargetPrediction,OptimizationHints\r
@@ -2257,7 +2257,7 @@ struct SetupGuideView: View {
                     guideRow(
                         icon: "cpu",
                         title: "JIT Compilation",
-                        detail: "Required for x86 code translation. On iOS 26, StikDebug must stay attached — assign the 'universal' or 'MeloNX' JIT script to Mythic in StikDebug."
+                        detail: "Required for x86 code translation. On iOS 26, StikDebug must stay attached — assign the 'universal' or 'MeloNX' JIT script to Madeira in StikDebug."
                     )
                     guideRow(
                         icon: "memorychip",
@@ -2272,15 +2272,15 @@ struct SetupGuideView: View {
                 }
 
                 Section("Setup Steps") {
-                    stepRow(number: 1, text: "Install Mythic via SideStore or Xcode")
+                    stepRow(number: 1, text: "Install Madeira via SideStore or Xcode")
                     stepRow(number: 2, text: "Install GetMoreRam and run it to inject memory entitlements into your App ID")
-                    stepRow(number: 3, text: "Reinstall Mythic with the same IPA to apply injected entitlements")
-                    stepRow(number: 4, text: "In StikDebug, assign the 'universal' JIT script to Mythic and launch it")
-                    stepRow(number: 5, text: "Launch Mythic and tap 'Test JIT' to verify")
+                    stepRow(number: 3, text: "Reinstall Madeira with the same IPA to apply injected entitlements")
+                    stepRow(number: 4, text: "In StikDebug, assign the 'universal' JIT script to Madeira and launch it")
+                    stepRow(number: 5, text: "Launch Madeira and tap 'Test JIT' to verify")
                 }
 
                 Section("About") {
-                    Text("Mythic is a proof-of-concept for running x86 Windows games on iOS using FEX-Emu, Wine, and Metal-based graphics translation.")
+                    Text("Madeira is a proof-of-concept for running x86 Windows games on iOS using FEX-Emu, Wine, and Metal-based graphics translation.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -2419,7 +2419,7 @@ final class TouchControlsModel: ObservableObject {
     private var loading = false
     private static var url: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("mythic-controls.json")
+            .appendingPathComponent("madeira-controls.json")
     }
 
     private struct Saved: Codable { var controls: [TouchControl]; var visible: Bool }

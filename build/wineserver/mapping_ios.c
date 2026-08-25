@@ -324,7 +324,7 @@ int grow_file( int unix_fd, file_pos_t new_size )
     /* this should work around ftruncate implementations that can't extend files */
     if (pwrite( unix_fd, &zero, 1, size ) != -1)
     {
-        /* iOS-Mythic ml563: VERIFY the file actually reached the requested size.
+        /* iOS-Madeira ml563: VERIFY the file actually reached the requested size.
          *
          * NOTE (correcting ml562): a discarded ftruncate CANNOT explain a short
          * file. The pwrite above lands at offset `size`, extending the file to
@@ -359,7 +359,7 @@ int grow_file( int unix_fd, file_pos_t new_size )
 }
 
 /* simplified version of mkstemps(), rooted at server_dir_fd.
- * iOS-Mythic: wineserver shares one unix cwd with every pseudo-process, and
+ * iOS-Madeira: wineserver shares one unix cwd with every pseudo-process, and
  * child launches chdir it anywhere (including read-only game dirs) — so temp
  * files must never be created via cwd-relative paths. openat also avoids the
  * upstream fchdir dance, which would race pseudo-processes doing relative
@@ -1539,7 +1539,7 @@ struct object *create_user_data_mapping( struct object *root, const struct unico
     if (!(mapping = create_mapping( root, name, attr, sizeof(KUSER_SHARED_DATA),
                                     SEC_COMMIT, 0, FILE_READ_DATA | FILE_WRITE_DATA, sd ))) return NULL;
 #ifdef WINE_IOS
-    /* ml731c: EVERYTHING here is behind MYTHIC_USD_TIME. The previous attempt put
+    /* ml731c: EVERYTHING here is behind MADEIRA_USD_TIME. The previous attempt put
      * only the risky write behind the switch and left the mapping change beside
      * it ungated, so "flag off" was not the old build and there was no clean
      * baseline to compare against. A kill switch that does not restore the prior

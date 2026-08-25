@@ -39,7 +39,7 @@ static int fetch(const WCHAR *host, INTERNET_PORT port, const WCHAR *path, DWORD
 
     out("[net-test] %S:%u %S %s\n", host, port, path, secure ? "(TLS)" : "(plain)");
 
-    ses = WinHttpOpen(L"Mythic-S0-Test/1.0", WINHTTP_ACCESS_TYPE_NO_PROXY,
+    ses = WinHttpOpen(L"Madeira-S0-Test/1.0", WINHTTP_ACCESS_TYPE_NO_PROXY,
                       WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!ses) { out("[net-test] WinHttpOpen FAILED err=%lu\n", GetLastError()); goto done; }
 
@@ -90,7 +90,7 @@ int main(void)
 {
     int http_ok, https_ok;
 
-    out("[net-test] === Mythic S0 network/TLS smoke test ===\n");
+    out("[net-test] === Madeira S0 network/TLS smoke test ===\n");
 
     http_ok = fetch(L"example.com", INTERNET_DEFAULT_HTTP_PORT, L"/", 0);
     out("[net-test] STAGE 1 (plain HTTP): %s\n", http_ok ? "PASS" : "FAIL");
@@ -106,12 +106,12 @@ int main(void)
      * VPN, which conflicts with the user's real VPN. By this point both
      * TLS stages ran, so every code path the Steam stage needs is
      * already JIT-compiled — safe to detach the debugger and switch
-     * VPNs. We wait for C:\mythic-continue.flag, written by the app's
+     * VPNs. We wait for C:\madeira-continue.flag, written by the app's
      * "Continue Net Test" button, deleting it first so a stale flag
      * can't skip the pause. Waiting uses only already-compiled code
      * (CreateFileA probe + Sleep). 10-minute cap. */
     {
-        const char *flag = "C:\\mythic-continue.flag";
+        const char *flag = "C:\\madeira-continue.flag";
         int waited;
         DeleteFileA(flag);
         out("[net-test] === PAUSED: detach JIT debugger + switch VPN now; tap 'Continue Net Test' ===\n");

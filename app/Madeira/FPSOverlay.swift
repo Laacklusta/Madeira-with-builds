@@ -49,7 +49,7 @@ struct FPSOverlay: View {
     @State private var visible: Bool = true
     @State private var timer: Timer? = nil
     @State private var displayTimer: Timer? = nil
-    /// Mirrors DXMT's g_mythic_vsync_mode (read per present, live-safe).
+    /// Mirrors DXMT's g_madeira_vsync_mode (read per present, live-safe).
     /// 1 = locked 60, 0 = display max (120 ProMotion), 2 = raw (frame-skip
     /// mailbox — game unthrottled, panel shows ≤ display rate).
     @State private var vsyncMode: Int32 = 1
@@ -156,7 +156,7 @@ struct FPSOverlay: View {
                 .stroke(pillColor, lineWidth: 1))
             .onTapGesture {
                 vsyncMode = vsyncMode == 1 ? 0 : (vsyncMode == 0 ? 2 : 1)
-                mythic_set_vsync_locked(vsyncMode)
+                madeira_set_vsync_locked(vsyncMode)
                 ProMotionIntent.shared.setActive(vsyncMode != 1)
             }
     }
@@ -188,16 +188,16 @@ struct FPSOverlay: View {
     private func startTimers() {
         stopTimers()
         let now = CFAbsoluteTimeGetCurrent()
-        let c = mythic_get_present_count()
+        let c = madeira_get_present_count()
         samples = [(now, c)]
         presentCount = c
-        vsyncMode = mythic_get_vsync_locked()
+        vsyncMode = madeira_get_vsync_locked()
         ProMotionIntent.shared.setActive(vsyncMode != 1)
 
         // 100ms sampling — keeps the buffer fresh
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
             let t = CFAbsoluteTimeGetCurrent()
-            let cur = mythic_get_present_count()
+            let cur = madeira_get_present_count()
             samples.append((t, cur))
             if samples.count > bufferCapacity { samples.removeFirst() }
             presentCount = cur

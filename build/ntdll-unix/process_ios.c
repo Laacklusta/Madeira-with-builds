@@ -927,7 +927,7 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
          * ec-recheck probe reading combase's IAT after it unloaded — fixed
          * separately in loader.c; gating this simply removes the churn and the
          * pool pressure from the consistency baseline.) */
-        /* iOS-Mythic ml628: UnityCrashHandler64.exe — same class as steamerrorreporter.
+        /* iOS-Madeira ml628: UnityCrashHandler64.exe — same class as steamerrorreporter.
          *
          * It is Unity's OPTIONAL crash-reporting helper; the game runs fine without it.
          * In the ml627 run it started failing, called NtTerminateProcess(0xfffffc85), and
@@ -1229,15 +1229,15 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
                  *
                  * Interpreted V8 costs 5-20x on all of Steam's UI JavaScript, so
                  * this is the largest single startup lever we have.
-                 * MYTHIC_JITLESS=0 turns it off; default stays ON (unchanged). */
+                 * MADEIRA_JITLESS=0 turns it off; default stays ON (unchanged). */
                 static const char sp_jitless[] = " --single-process --enable-logging=file --v=1 --log-severity=verbose"
                                                  " --no-proxy-server --winhttp-proxy-resolver --js-flags=--jitless";
                 static const char sp_jit[]     = " --single-process --enable-logging=file --v=1 --log-severity=verbose"
                                                  " --no-proxy-server --winhttp-proxy-resolver";
-                const char *jl = getenv( "MYTHIC_JITLESS" );
+                const char *jl = getenv( "MADEIRA_JITLESS" );
                 int jitless_on = !(jl && jl[0] == '0');
                 const char *sp = jitless_on ? sp_jitless : sp_jit;
-                dprintf(2, "[proc-gate] V8 %s (MYTHIC_JITLESS=%s) rev=ml526\n",
+                dprintf(2, "[proc-gate] V8 %s (MADEIRA_JITLESS=%s) rev=ml526\n",
                         jitless_on ? "JITLESS (interpreted)" : "JIT ENABLED — #82 retest",
                         jl ? jl : "unset");
                 static const char dfs[] = "--disable-features=";
@@ -1530,7 +1530,7 @@ done:
 
 #ifdef WINE_IOS
 /******************************************************************************
- * iOS-Mythic ml661: REAL BOUNDED x64 UNWIND (.pdata / UNWIND_INFO)
+ * iOS-Madeira ml661: REAL BOUNDED x64 UNWIND (.pdata / UNWIND_INFO)
  *
  * WHY THIS REPLACES THE TWO THINGS WE HAD.
  *
@@ -1726,7 +1726,7 @@ again:
     return 1;
 }
 
-/* iOS-Mythic ml663: [runtime-info] — the MSVCRT inherited-fd blob.
+/* iOS-Madeira ml663: [runtime-info] — the MSVCRT inherited-fd blob.
  *
  * Layout (x64):  DWORD count; BYTE flags[count]; HANDLE handles[count];
  * UCRT's lowio init consumes this BEFORE it consults GetStdHandle. If it finds
@@ -1767,7 +1767,7 @@ void ios_dump_runtime_info( const char *when, const void *buf, unsigned int len 
     }
 }
 
-/* iOS-Mythic ml662: [std-handles] — the thing we have NEVER logged.
+/* iOS-Madeira ml662: [std-handles] — the thing we have NEVER logged.
  *
  * Book of the Dead dies inside UCRT `_isatty(fd)` on a descriptor that is
  * neither valid nor -2. `_isatty` TOLERATES -2 (the documented "no handle"
@@ -2038,7 +2038,7 @@ NTSTATUS WINAPI NtTerminateProcess( HANDLE handle, LONG exit_code )
 #ifdef WINE_IOS
     {
         static int term_log_count = 0;
-        /* iOS-Mythic [term-stack] (task#29): also fire on ANY nonzero exit_code
+        /* iOS-Madeira [term-stack] (task#29): also fire on ANY nonzero exit_code
          * (capped) so Steam's deliberate ExitProcess(-104) bootstrapper bail is
          * captured — the first-3 slots are consumed by early exit-0 procs
          * (cmd/start.exe) before steam.exe ever runs. The dump below (guest RIP +
@@ -2188,7 +2188,7 @@ NTSTATUS WINAPI NtTerminateProcess( HANDLE handle, LONG exit_code )
             }
         }
     }
-    /* iOS-Mythic ml659: THE 0xc0000409 -> THREAD-TERMINATE HACK IS GONE.
+    /* iOS-Madeira ml659: THE 0xc0000409 -> THREAD-TERMINATE HACK IS GONE.
      *
      * From 2026-05-13 until now this converted a whole-process fast-fail into a
      * single thread death, so "the game continues". Its own comment called it a

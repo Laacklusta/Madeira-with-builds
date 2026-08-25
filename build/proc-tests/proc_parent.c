@@ -39,10 +39,10 @@ int main(void)
     memset(&si, 0, sizeof(si));
     si.cb = sizeof(si);
 
-    out("[proc-test] === Mythic S1 CreateProcess smoke test v2 (env + 3-deep tree) ===\n");
+    out("[proc-test] === Madeira S1 CreateProcess smoke test v2 (env + 3-deep tree) ===\n");
 
     /* Env inheritance: every process in the tree must see this. */
-    if (!SetEnvironmentVariableA("MYTHIC_TEST_VAR", "steam-s1"))
+    if (!SetEnvironmentVariableA("MADEIRA_TEST_VAR", "steam-s1"))
         out("[proc-test] SetEnvironmentVariable FAILED err=%lu\n", GetLastError());
 
     out("[proc-test] parent pid=%lu spawning: %s\n",

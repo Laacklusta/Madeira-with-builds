@@ -1,6 +1,6 @@
 // iOS-specific override for get_nls_dir
-// On iOS, _NSGetExecutablePath returns .../Mythic.app/Mythic
-// We want to return .../Mythic.app/nls
+// On iOS, _NSGetExecutablePath returns .../Madeira.app/Madeira
+// We want to return .../Madeira.app/nls
 #include <mach-o/dyld.h>
 #include <stdlib.h>
 #include <string.h>

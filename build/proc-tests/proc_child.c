@@ -4,7 +4,7 @@
  * grandchild) and requires its exit code to be 42 — so a 3-process tree
  * runs with two pseudo-processes alive at once (two ntdll copies, two
  * owner_peb entries, the global-peb flip happening twice). Every level
- * also verifies MYTHIC_TEST_VAR inherited from the top-level parent.
+ * also verifies MADEIRA_TEST_VAR inherited from the top-level parent.
  *
  * Exit codes: 42 = all good; 51 = env var missing/wrong; 52 = grandchild
  * spawn failed; 53 = grandchild wait/exit-code wrong; 7/8 = memory checks.
@@ -40,14 +40,14 @@ int main(int argc, char **argv)
         (unsigned long)GetCurrentProcessId(), depth);
 
     /* Env inheritance check (set by the top-level parent) */
-    envlen = GetEnvironmentVariableA("MYTHIC_TEST_VAR", envbuf, sizeof(envbuf));
+    envlen = GetEnvironmentVariableA("MADEIRA_TEST_VAR", envbuf, sizeof(envbuf));
     if (!envlen || strcmp(envbuf, "steam-s1") != 0)
     {
-        out("[child-test] depth=%d env MYTHIC_TEST_VAR=%s (len=%lu) — WRONG\n",
+        out("[child-test] depth=%d env MADEIRA_TEST_VAR=%s (len=%lu) — WRONG\n",
             depth, envlen ? envbuf : "(unset)", (unsigned long)envlen);
         return 51;
     }
-    out("[child-test] depth=%d env MYTHIC_TEST_VAR=%s OK\n", depth, envbuf);
+    out("[child-test] depth=%d env MADEIRA_TEST_VAR=%s OK\n", depth, envbuf);
 
     /* Exercise virtual memory + heap in this process's own context */
     mem = VirtualAlloc(NULL, 0x10000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);

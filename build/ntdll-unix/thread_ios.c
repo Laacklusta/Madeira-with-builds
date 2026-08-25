@@ -1111,7 +1111,7 @@ static void contexts_from_server( CONTEXT *context, struct context_data server_c
  */
 static DECLSPEC_NORETURN void pthread_exit_wrapper( int status )
 {
-    /* iOS-Mythic ml558: a NATIVE (non-wine) thread can reach here.
+    /* iOS-Madeira ml558: a NATIVE (non-wine) thread can reach here.
      *
      * ml557 died exactly this way: a native thread faulted, the [fault-stuck]
      * breaker diverted it to abort_thread -> here, NtCurrentTeb() was NULL, and
@@ -1133,7 +1133,7 @@ static DECLSPEC_NORETURN void pthread_exit_wrapper( int status )
     close( ntdll_get_thread_data()->wait_fd[1] );
     close( ntdll_get_thread_data()->reply_fd );
     close( ntdll_get_thread_data()->request_fd );
-    /* iOS-Mythic (Steam S0): we write the TEB directly into TSD slot 275
+    /* iOS-Madeira (Steam S0): we write the TEB directly into TSD slot 275
      * (start_thread above) because FEX hardcodes offset 0x898 — but we
      * don't OWN dynamic key 275. If an Apple framework allocated that key
      * with an ObjC destructor, pthread's TSD cleanup calls
@@ -1141,7 +1141,7 @@ static DECLSPEC_NORETURN void pthread_exit_wrapper( int status )
      * crash (seen: every winhttp resolver-thread exit died in
      * objc_release+0x10 under pthread_exit). NULL values are skipped by
      * the cleanup loop, so clear the slot before exiting. */
-    /* iOS-Mythic ml614: DETECT the leaked FEX hold, but DO NOT CALL INTO FEX.
+    /* iOS-Madeira ml614: DETECT the leaked FEX hold, but DO NOT CALL INTO FEX.
      *
      * ⛔⛔ ml613 CALLED BTCpu64IosReleaseThreadHolds FROM HERE AND CRASHED EVERY
      * LAUNCH. That export is an **ARM64EC PE entry**, not a native Mach-O ARM64
@@ -1220,7 +1220,7 @@ static DECLSPEC_NORETURN void pthread_exit_wrapper( int status )
          * We used to poke raw slot 275 here, which we never owned. */
         extern pthread_key_t ios_teb_tls_key;
         pthread_setspecific( ios_teb_tls_key, NULL );
-        /* iOS-Mythic ml413 (#60): xtajit64 stamps TEB->Instrumentation[8]
+        /* iOS-Madeira ml413 (#60): xtajit64 stamps TEB->Instrumentation[8]
          * (+0x16f8) while this thread holds a FEX shared lock (compile-time
          * CodeInvalidationMutex read hold). A thread exiting with the stamp
          * still set is leaking that hold — every later invalidation writer
@@ -1255,7 +1255,7 @@ static void start_thread( TEB *teb )
     struct ntdll_thread_data *thread_data = (struct ntdll_thread_data *)&teb->GdiTebBatch;
     BOOL suspend;
 
-    /* iOS-Mythic 2026-07-04 perf: promote guest threads to USER_INTERACTIVE
+    /* iOS-Madeira 2026-07-04 perf: promote guest threads to USER_INTERACTIVE
      * QoS. Default-QoS pthreads on iOS are E-core-eligible and get heavy
      * kernel timer coalescing (tens of ms of wakeup leeway on
      * select/nanosleep). [PROF] showed the game thread parked ~87% of each
@@ -2046,7 +2046,7 @@ NTSTATUS WINAPI NtTerminateThread( HANDLE handle, LONG exit_code )
     unsigned int ret;
     BOOL self;
 
-    /* iOS-Mythic ml559 (#74 successor, DISCRIMINATOR — not a fix):
+    /* iOS-Madeira ml559 (#74 successor, DISCRIMINATOR — not a fix):
      *
      * ml558 died on a `BRK #1` (__builtin_trap) inside a system library, on a
      * thread we do not own, immediately after FEX logged "[thr-term] CROSS-TERM

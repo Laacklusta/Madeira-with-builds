@@ -30,7 +30,7 @@
 #include <mach/vm_region.h>
 #include "wine_log_ios.h"
 
-/* iOS-Mythic 2026-07-05: in-process request-wake semaphore. The iOS
+/* iOS-Madeira 2026-07-05: in-process request-wake semaphore. The iOS
  * server loop can't block in poll/kqueue (AF_UNIX invisible in the
  * sandbox), so it slept a fixed 1ms tick — meaning every client request
  * waited avg ~0.5ms (worst 1ms+) just to be NOTICED. Thumper does 8
@@ -410,7 +410,7 @@ int ios_usd_time_enabled(void)
     static int env = -1;
     if (env < 0)
     {
-        const char *e = getenv( "MYTHIC_USD_TIME" );
+        const char *e = getenv( "MADEIRA_USD_TIME" );
         env = (e && e[0] == '1') ? 1 : 0;
     }
     return env;
@@ -521,7 +521,7 @@ void set_current_time(void)
      * middleware SDK's independent timer in those same lines advanced from 31s
      * to 466s -- two clocks in one process, one of them stopped.
      *
-     * Opt-in for now (MYTHIC_USD_TIME=1) only because the old comment claimed a
+     * Opt-in for now (MADEIRA_USD_TIME=1) only because the old comment claimed a
      * fault; a functioning clock should not stay experimental once proven. */
     /* ml731f: the periodic path is now NOTHING but the seven stores.
      *
@@ -798,7 +798,7 @@ static inline void set_fd_epoll_events( struct fd *fd, int user, int events )
 {
     struct kevent ev[2];
 
-    /* iOS-Mythic 2026-07-05: log line removed — kqueue is always skipped
+    /* iOS-Madeira 2026-07-05: log line removed — kqueue is always skipped
      * on iOS (poll fallback) and this fired per fd-event change: 3,234
      * lines of pure noise in one gameplay run. */
     if (kqueue_fd == -1) return;
@@ -1137,7 +1137,7 @@ static int get_next_timeout( struct timespec *ts )
 }
 
 /* server main poll() loop */
-/* iOS-Mythic 2026-07-05 (Steam S0): the sandbox poll() limitation is
+/* iOS-Madeira 2026-07-05 (Steam S0): the sandbox poll() limitation is
  * specific to the AF_UNIX master socketpair — real INET sockets (TCP/
  * UDP) are fully kernel-pollable on iOS. wineserver's sock.c depends on
  * true poll semantics (POLLOUT edge = connect completed, POLLERR/HUP =
@@ -1293,7 +1293,7 @@ void main_loop(void)
                 static struct timespec qdump_last;
                 if (qdump_on < 0)
                 {
-                    const char *d = getenv("MYTHIC_DESKTOP");
+                    const char *d = getenv("MADEIRA_DESKTOP");
                     qdump_on = (d && *d == '1');
                 }
                 if (qdump_on)
@@ -1337,7 +1337,7 @@ void main_loop(void)
                 }
             }
 
-            /* iOS-Mythic 2026-07-05: deadline-aware, REQUEST-INTERRUPTIBLE
+            /* iOS-Madeira 2026-07-05: deadline-aware, REQUEST-INTERRUPTIBLE
              * sleep (was a fixed usleep(1000)). Duration = min(1ms tick,
              * next timer deadline) so timer wakes are exact (~50us); and
              * the sleep is a semaphore_timedwait so a client signaling
@@ -1358,7 +1358,7 @@ void main_loop(void)
                 if (ios_next_timer_ns < sleep_ns) sleep_ns = ios_next_timer_ns;
                 if (sleep_ns > 0)
                 {
-                    /* ml585 A/B, default OFF. MYTHIC_SRV_NOSEM=1 ignores the
+                    /* ml585 A/B, default OFF. MADEIRA_SRV_NOSEM=1 ignores the
                      * wake semaphore and sleeps the computed duration outright.
                      *
                      * Why: semaphore_signal() is a COUNTING operation and
@@ -1379,9 +1379,9 @@ void main_loop(void)
                     static int nosem = -1;
                     if (nosem < 0)
                     {
-                        const char *e = getenv("MYTHIC_SRV_NOSEM");
+                        const char *e = getenv("MADEIRA_SRV_NOSEM");
                         nosem = (e && *e == '1');
-                        ws_log("[srv-poll] MYTHIC_SRV_NOSEM=%d (%s wake path)",
+                        ws_log("[srv-poll] MADEIRA_SRV_NOSEM=%d (%s wake path)",
                                nosem, nosem ? "FIXED-SLEEP A/B" : "default semaphore");
                     }
                     if (ios_srv_wake_sem && !nosem)

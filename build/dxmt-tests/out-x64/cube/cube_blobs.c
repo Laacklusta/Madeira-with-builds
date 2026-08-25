@@ -191,9 +191,9 @@ unsigned char cube_ps[] = {
 };
 unsigned int cube_ps_len = 584;
 
-const struct mythic_shader_blob mythic_shader_blobs[] = {
+const struct madeira_shader_blob madeira_shader_blobs[] = {
   { "shader_cube.hlsl", "vs_main", "vs_5_0", cube_vs, sizeof(cube_vs) },
   { "shader_cube.hlsl", "ps_main", "ps_5_0", cube_ps, sizeof(cube_ps) },
 };
-const unsigned int mythic_shader_blob_count =
-    sizeof(mythic_shader_blobs) / sizeof(mythic_shader_blobs[0]);
+const unsigned int madeira_shader_blob_count =
+    sizeof(madeira_shader_blobs) / sizeof(madeira_shader_blobs[0]);

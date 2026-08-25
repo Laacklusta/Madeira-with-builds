@@ -41,13 +41,13 @@ static struct user_driver_funcs null_user_driver;
 static WCHAR driver_load_error[80];
 
 #ifdef WINE_IOS
-/* winios.drv — Mythic's iOS display/input driver. Lives in
- * app/Mythic/Winios/. Most slots stay NULL so __wine_set_user_driver's
+/* winios.drv — Madeira's iOS display/input driver. Lives in
+ * app/Madeira/Winios/. Most slots stay NULL so __wine_set_user_driver's
  * SET_USER_FUNC fallback installs the always-success nulldrv_* stubs;
  * we only override the bits that need real iOS UIKit bridging
  * (pProcessEvents, pSetCursor, etc.) once those are wired up.
  *
- * Implementations live in app/Mythic/Winios/Winios.m and are pulled in
+ * Implementations live in app/Madeira/Winios/Winios.m and are pulled in
  * via these extern declarations. Each is __attribute__((weak)) so the
  * driver registers cleanly even before the Obj-C side is implemented —
  * a missing impl resolves to NULL and SET_USER_FUNC falls back. */
@@ -243,11 +243,11 @@ void winios_dump_window_tree(void)
  * Modeled on win32u's offscreen surface (dce.c): the generic
  * window_surface layer owns the 32bpp top-down DIB and hands us the
  * bits at flush time; we just forward them to the app side, which
- * uploads into a per-window CALayer. Gated on MYTHIC_DESKTOP=1 so the
+ * uploads into a per-window CALayer. Gated on MADEIRA_DESKTOP=1 so the
  * games path keeps its invisible offscreen surfaces unchanged.
  * ============================================================ */
 
-/* Implemented in app/Mythic/Winios/Winios.m (weak, same pattern as the
+/* Implemented in app/Madeira/Winios/Winios.m (weak, same pattern as the
  * driver hooks below). Called on wine threads — the app side copies the
  * bits before returning and uploads on the main thread. */
 extern void winios_surface_present( HWND hwnd, int dirty_x, int dirty_y, int dirty_w, int dirty_h,
@@ -358,7 +358,7 @@ static int winios_desktop_mode(void)
     static int mode = -1;
     if (mode < 0)
     {
-        const char *env = getenv( "MYTHIC_DESKTOP" );
+        const char *env = getenv( "MADEIRA_DESKTOP" );
         mode = (env && *env == '1');
     }
     return mode;
@@ -1561,7 +1561,7 @@ static void load_display_driver(void)
         /* Wire up winios.drv slots from the weak externs above. Slots
          * with no implementation linked (weak ref == NULL) stay NULL
          * and SET_USER_FUNC falls back to nulldrv_*. Real impls live
-         * in app/Mythic/Winios/Winios.m and link in via Mythic.app. */
+         * in app/Madeira/Winios/Winios.m and link in via Madeira.app. */
         if (winios_pCreateWindow)        winios_user_driver.pCreateWindow        = winios_pCreateWindow;
         if (winios_pDestroyWindow)       winios_user_driver.pDestroyWindow       = winios_pDestroyWindow;
         if (winios_pProcessEvents)       winios_user_driver.pProcessEvents       = winios_pProcessEvents;

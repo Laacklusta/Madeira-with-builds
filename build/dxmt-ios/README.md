@@ -1,7 +1,7 @@
 # DXMT on iOS
 
 Builds the iOS side of DXMT — the D3D11→Metal translation layer — as a
-static library that links into Mythic.app, plus the aarch64-windows PE
+static library that links into Madeira.app, plus the aarch64-windows PE
 DLLs the game loads via Wine.
 
 The upstream DXMT source lives at `research/dxmt/` as a git submodule
@@ -10,12 +10,12 @@ pointing at our fork [willfaust/dxmt](https://github.com/willfaust/dxmt),
 
 ## What this produces
 
-- `libdxmt_combined.a` (~79MB) → `app/Mythic/libdxmt_combined.a`.
+- `libdxmt_combined.a` (~79MB) → `app/Madeira/libdxmt_combined.a`.
   DXMT's unix/Metal side + airconv shader translator + LLVM 15 static
   libs, combined into one archive Xcode links.
 - `d3d11.dll`, `dxgi.dll`, `winemetal.dll`, `d3d10core.dll` →
-  `app/Mythic/aarch64-windows/`. Aarch64 Windows PE, built via
-  llvm-mingw, loaded by Wine inside Mythic.
+  `app/Madeira/aarch64-windows/`. Aarch64 Windows PE, built via
+  llvm-mingw, loaded by Wine inside Madeira.
 
 Both are gitignored — rebuild via the steps below.
 
@@ -77,7 +77,7 @@ cp build-pe/src/d3d11/d3d11.dll \
    build-pe/src/dxgi/dxgi.dll \
    build-pe/src/winemetal/winemetal.dll \
    build-pe/src/d3d10/d3d10core.dll \
-   ../../app/Mythic/aarch64-windows/
+   ../../app/Madeira/aarch64-windows/
 ```
 
 ### Unix side (libdxmt_combined.a)
@@ -88,7 +88,7 @@ cp build-pe/src/d3d11/d3d11.dll \
 # Combine DXMT objs + LLVM iOS static libs into one archive Xcode links.
 xcrun -sdk iphoneos libtool -static -o libdxmt_combined.a \
     obj/*.o ../../toolchains/llvm-ios-build/lib/*.a
-cp libdxmt_combined.a ../../app/Mythic/
+cp libdxmt_combined.a ../../app/Madeira/
 ```
 
 ## What the fork changes vs upstream

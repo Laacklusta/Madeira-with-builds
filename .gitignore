@@ -29,11 +29,11 @@ build/ntdll-unix/obj/
 build/wineserver/obj/
 
 # Compiled libraries (rebuilt from build scripts)
-app/Mythic/libntdll_unix.a
-app/Mythic/libwineserver.a
+app/Madeira/libntdll_unix.a
+app/Madeira/libwineserver.a
 app/libwineserver.a
-app/Mythic/libdxmt_combined.a
-app/Mythic/libwin32u_unix.a
+app/Madeira/libdxmt_combined.a
+app/Madeira/libwin32u_unix.a
 app/libwin32u_unix.a
 
 # win32u-unix build artifacts
@@ -60,9 +60,9 @@ build/dxmt-tests/out/
 # and skips wineboot. Rebuilt from the wine submodule if needed (requires
 # bison 3.x + llvm-dlltool). services.exe + rpcss.exe graduated to tracked
 # with the 2026-07-07 rpcss milestone (SCM + COM are live now).
-app/Mythic/aarch64-windows/plugplay.exe
-app/Mythic/aarch64-windows/svchost.exe
-app/Mythic/aarch64-windows/winedevice.exe
+app/Madeira/aarch64-windows/plugplay.exe
+app/Madeira/aarch64-windows/svchost.exe
+app/Madeira/aarch64-windows/winedevice.exe
 
 # Toolchains (pulled by build scripts)
 toolchains/
@@ -112,4 +112,4 @@ build/x64-tests/asmconf_obj/
 # Microsoft-authored binaries, redistributable only under the Visual Studio
 # redistributable terms and only unmodified. Not ours to ship -- obtain them
 # yourself, see tools/fetch-vcruntime.md.
-app/Mythic/x86_64-vcruntime/*.dll
+app/Madeira/x86_64-vcruntime/*.dll

@@ -2,12 +2,12 @@
  *
  * The Wine win32u-unix side declares weak externs `winios_pCreateWindow`,
  * `winios_pProcessEvents`, etc. in build/win32u-unix/driver_ios.c. This
- * file implements them and gets linked into Mythic.app, completing the
+ * file implements them and gets linked into Madeira.app, completing the
  * driver-funcs slots. Slots we don't implement here (e.g. WintabProc,
  * Vulkan) stay weak-resolved-to-NULL and __wine_set_user_driver falls
  * back to win32u's always-success nulldrv_* stubs.
  *
- * Architecture goal: every UIKit-side state lives here, on the Mythic
+ * Architecture goal: every UIKit-side state lives here, on the Madeira
  * app side; the driver-facing surface is plain C functions taking Wine
  * types (HWND, HCURSOR, etc.) so the win32u side stays portable.
  *
@@ -123,9 +123,9 @@ static unsigned winios_resident_mb(void) {
  *
  * Steam takes ~33s from the desktop's first present to the login window, and we
  * could only account for it in coarse chunks pieced together from Steam's own
- * cumulative logs. mythic-log cannot time anything on its own: its
+ * cumulative logs. madeira-log cannot time anything on its own: its
  * `[HH:MM:SS.mmm]` prefixes stop after the boot phase, and `[HEARTBEAT]` goes to
- * os_log only (0 hits in mythic-log). The only way to bound a run at all was the
+ * os_log only (0 hits in madeira-log). The only way to bound a run at all was the
  * last `[footprint] cycle=N` × 2s — which is 2s-granular and says nothing about
  * what happened in between.
  *
@@ -343,7 +343,7 @@ void winios_freeze_watch_start(void) {
 static os_log_t winios_log(void) {
     static os_log_t log;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ log = os_log_create("com.mythic.emulator", "winios.drv"); });
+    dispatch_once(&once, ^{ log = os_log_create("com.madeira.emulator", "winios.drv"); });
     return log;
 }
 
@@ -355,7 +355,7 @@ static os_log_t winios_log(void) {
 
 BOOL winios_pCreateWindow(HWND hwnd) {
     /* Real impl will set up a UIView with a CAMetalLayer attached to
-     * the Mythic window and bind it to this hwnd. For now: success.
+     * the Madeira window and bind it to this hwnd. For now: success.
      * DXMT-rendered games already get their CAMetalLayer via the
      * IOSDisplayShim macdrv_functions path — no need to allocate one
      * per HWND yet. */
@@ -439,7 +439,7 @@ void winios_pWindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
  * event pump — touch → mouse bridge
  * ============================================================
  *
- * Ring buffer of pending touch events posted by the Mythic Swift UI
+ * Ring buffer of pending touch events posted by the Madeira Swift UI
  * (via winios_post_touch / winios_post_touch_move / winios_post_touch_up).
  * The Wine thread drains it from pProcessEvents, translating each
  * touch event into a synthesized hardware mouse INPUT and dispatching
@@ -523,14 +523,14 @@ void winios_post_key(int vk, int down) {
 BOOL winios_pProcessEvents(DWORD mask) {
     static unsigned int cnt;
     static int quiet = -1;
-    if (quiet < 0) quiet = getenv("MYTHIC_QUIET") != NULL;
+    if (quiet < 0) quiet = getenv("MADEIRA_QUIET") != NULL;
     if ((cnt++ % 240) == 0 && !quiet) {
         fprintf(stderr, "[winios] pProcessEvents called n=%u\n", cnt); fflush(stderr);
     }
     /* Desktop debugging: dump the full window tree every ~5s. Runs on
      * this wine thread (valid TEB — the dump walks win32u internals). */
     static int desk = -1;
-    if (desk < 0) desk = ({ const char *d = getenv("MYTHIC_DESKTOP"); d && *d == '1'; });
+    if (desk < 0) desk = ({ const char *d = getenv("MADEIRA_DESKTOP"); d && *d == '1'; });
     if (desk) {
         static double next_tree_dump;
         double now = CACurrentMediaTime();
@@ -572,7 +572,7 @@ BOOL winios_pProcessEvents(DWORD mask) {
  * CALayer per HWND inside a full-screen, touch-transparent UIView and
  * let Core Animation do the compositing. Desktop coords are native
  * pixels (e.g. 1170x2532); layers are placed in points (÷ screen
- * scale). Only active when MYTHIC_DESKTOP=1 (the driver side gates
+ * scale). Only active when MADEIRA_DESKTOP=1 (the driver side gates
  * surface creation, so games never reach these). */
 
 static NSMutableDictionary<NSNumber *, CALayer *> *g_layers;
@@ -615,7 +615,7 @@ static void winios_layout_compositor(void) {
     CGRect frame = g_comp_frame_set ? g_comp_frame : (win ? win.bounds : g_compositor_view.frame);
     g_compositor_view.frame = frame;
 
-    const char *dw = getenv("MYTHIC_SCREEN_W"), *dh = getenv("MYTHIC_SCREEN_H");
+    const char *dw = getenv("MADEIRA_SCREEN_W"), *dh = getenv("MADEIRA_SCREEN_H");
     int desk_w = dw ? atoi(dw) : 1024, desk_h = dh ? atoi(dh) : 768;
     if (desk_w <= 0) desk_w = 1024;
     if (desk_h <= 0) desk_h = 768;
@@ -658,7 +658,7 @@ static void winios_ensure_compositor(void) {
     if (g_compositor_view) return;
     /* desktop mode only — games render via DXMT's Metal layer and the
      * compositor backdrop would cover it (2026-07-06 Thumper regression) */
-    const char *dm = getenv("MYTHIC_DESKTOP");
+    const char *dm = getenv("MADEIRA_DESKTOP");
     if (!dm || *dm != '1') return;
     UIWindow *win = nil;
     for (UIWindow *w in UIApplication.sharedApplication.windows) {
@@ -819,7 +819,7 @@ void winios_window_frame(HWND hwnd, int x, int y, int w, int h, int visible,
     });
 }
 
-/* MYTHIC_DUMP_SURFACES=1: save each window's DIB as PNG under
+/* MADEIRA_DUMP_SURFACES=1: save each window's DIB as PNG under
  * Documents/surfdump/ — surf-<hwnd>-first.png once, then
  * surf-<hwnd>-latest.png at most every 2s. Ground truth for whether a
  * rendering bug is in the surface bits (wine paint path) or in the
@@ -907,12 +907,12 @@ static void winios_dump_surface_png(HWND hwnd, NSData *data, int sw, int sh, int
  *
  * Deliberately reuses winios_dump_surface_named, so both PNGs are produced by
  * the identical encoder — the only difference between them is the buffer, which
- * is the whole point. Bounded and gated on MYTHIC_DUMP_SURFACES so it costs
+ * is the whole point. Bounded and gated on MADEIRA_DUMP_SURFACES so it costs
  * nothing unless we are hunting. */
 /* ml537: the src dump and the surface dump must be PAIRED, or the comparison
  * is worthless. They fire at different points — src at blit time from
  * dibdrv_PutImage, surface at flush time from winios_surface_present, gated by
- * its own independent MYTHIC_SURF_SEQ burst logic — so an unpaired src-003 and
+ * its own independent MADEIRA_SURF_SEQ burst logic — so an unpaired src-003 and
  * seq-... could easily be different FRAMES, and any difference between them
  * would be frame-to-frame change rather than corruption. That would have looked
  * exactly like a finding.
@@ -928,7 +928,7 @@ static volatile int wph_pair_n;
 
 void winios_dump_srcbits(const void *bits, int w, int h, int stride) {
     static int on = -1;
-    if (on < 0) on = getenv("MYTHIC_DUMP_SURFACES") != NULL;
+    if (on < 0) on = getenv("MADEIRA_DUMP_SURFACES") != NULL;
     if (!on || !bits || w <= 0 || h <= 0 || stride < w * 4) return;
     if (wph_pair) return;              /* a pair is already awaiting its surface */
     /* ml542: was 12. Sample size is now the binding constraint on the render
@@ -958,7 +958,7 @@ void winios_surface_present(HWND hwnd, int dx, int dy, int dw, int dh,
     if (sw <= 0 || sh <= 0 || !bits) return;
     NSData *data = [NSData dataWithBytes:bits length:(size_t)stride * sh];
     static int dumpSurf = -1;
-    if (dumpSurf < 0) dumpSurf = getenv("MYTHIC_DUMP_SURFACES") != NULL;
+    if (dumpSurf < 0) dumpSurf = getenv("MADEIRA_DUMP_SURFACES") != NULL;
     /* ml537: complete an armed src/surface pair with the FIRST present after the
      * blit, so the two PNGs are as close to the same frame as these call sites
      * allow. Named identically apart from SRC/SURF. */
@@ -980,7 +980,7 @@ void winios_surface_present(HWND hwnd, int dx, int dy, int dw, int dh,
      * full?" could not be answered from ml493's log at all. Identity must
      * be the window, not a process-wide sequence number.
      *
-     * Also drives MYTHIC_SURF_SEQ: bursts of N CONSECUTIVE frames, so the
+     * Also drives MADEIRA_SURF_SEQ: bursts of N CONSECUTIVE frames, so the
      * black regions that change every frame can be measured frame-to-frame
      * offline. The 2s-throttled first/latest dump structurally cannot show
      * that. Dirty rect goes in the filename so each frame carries the one
@@ -994,7 +994,7 @@ void winios_surface_present(HWND hwnd, int dx, int dy, int dw, int dh,
     static int seq_used;
     static int seqFrames = -1, seqBursts, seqMinDim;
     if (seqFrames < 0) {
-        const char *e = getenv("MYTHIC_SURF_SEQ");
+        const char *e = getenv("MADEIRA_SURF_SEQ");
         seqFrames = e ? atoi(e) : 0;
         if (seqFrames > 32) seqFrames = 32;
         seqBursts = 14;       /* ml496: 25s/6 bursts only ever caught the
@@ -1095,7 +1095,7 @@ void winios_surface_present(HWND hwnd, int dx, int dy, int dw, int dh,
      * Writes go to our own DIB while wine holds the surface lock, and only
      * ever to pixels that are currently invisible black. */
     static int sentinelMode = -1;
-    if (sentinelMode < 0) sentinelMode = getenv("MYTHIC_SURF_SENTINEL") != NULL;
+    if (sentinelMode < 0) sentinelMode = getenv("MADEIRA_SURF_SENTINEL") != NULL;
     if (sentinelMode && s >= 0 && sw >= 400 && sh >= 400 && seq[s].sent_rounds < 10) {
         const uint32_t SENT = 0x01FF00FFu;      /* B=FF G=00 R=FF A=01 */
         uint32_t *px = (uint32_t *)(uintptr_t)bits;

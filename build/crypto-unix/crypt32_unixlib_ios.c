@@ -29,7 +29,7 @@
 #include <unistd.h>
 #include <dlfcn.h>
 #include <sys/stat.h>
-/* iOS-Mythic: SecTrustSettingsCopyCertificates / SecItemExport are
+/* iOS-Madeira: SecTrustSettingsCopyCertificates / SecItemExport are
  * macOS-only — the iOS SDK has no API to enumerate system root CAs at
  * all. We ship Mozilla's CA bundle (cacert.pem) in the app instead;
  * see load_root_certs below. */
@@ -797,12 +797,12 @@ static void load_root_certs(void)
     unsigned int i;
 
 #ifdef WINE_IOS
-    /* iOS-Mythic: no system root store API on iOS. WineProcessBridge.m
-     * points MYTHIC_CA_BUNDLE at the bundled Mozilla cacert.pem
+    /* iOS-Madeira: no system root store API on iOS. WineProcessBridge.m
+     * points MADEIRA_CA_BUNDLE at the bundled Mozilla cacert.pem
      * (concatenated PEM — same format as ca-certificates.crt, which
      * import_certs_from_file already parses). */
-    const char *bundle = getenv( "MYTHIC_CA_BUNDLE" );
-    dprintf(2, "[crypt32-ios] load_root_certs: MYTHIC_CA_BUNDLE=%s\n",
+    const char *bundle = getenv( "MADEIRA_CA_BUNDLE" );
+    dprintf(2, "[crypt32-ios] load_root_certs: MADEIRA_CA_BUNDLE=%s\n",
             bundle ? bundle : "(NULL!)");  /* Steam S0 diag */
     if (bundle) import_certs_from_path( bundle, FALSE );
     {

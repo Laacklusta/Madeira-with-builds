@@ -1,9 +1,9 @@
 /*
- * wineios.drv — minimal iOS audio driver PE stub for Mythic.
+ * wineios.drv — minimal iOS audio driver PE stub for Madeira.
  *
  * Just exists to satisfy mmdevapi's __wine_load_unix_lib at the PE-load
  * stage. All real driver behavior is on the unix side, statically linked
- * into Mythic.app via libntdll_unix.a (see audio_null_ios.c).
+ * into Madeira.app via libntdll_unix.a (see audio_null_ios.c).
  *
  * No windows.h includes to avoid mingw/Wine header collisions with the
  * cross-compile toolchain.

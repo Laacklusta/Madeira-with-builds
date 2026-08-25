@@ -4225,7 +4225,7 @@ DECL_HANDLER(set_keyboard_repeat)
 /* ============================================================ *
  * [srv-queues] full message-queue state dump — diagnoses
  * cross-pseudo-process SendMessage stalls (S2 desktop). Called from
- * the fd_ios.c server loop every ~10s when MYTHIC_DESKTOP=1.
+ * the fd_ios.c server loop every ~10s when MADEIRA_DESKTOP=1.
  * Shows per thread: wake bits vs mask (a thread with wake_bits
  * matching wake_mask but not running = lost wakeup), pending sent
  * messages with their sender, and whose reply each thread awaits.
@@ -4361,7 +4361,7 @@ void ios_dump_stuck_waits(void)
 
     if (thresh_s < 0)
     {
-        const char *e = getenv("MYTHIC_STUCK_WAIT_SECS");
+        const char *e = getenv("MADEIRA_STUCK_WAIT_SECS");
         thresh_s = e && *e ? atoi(e) : 5;
         if (thresh_s < 1) thresh_s = 1;
     }
