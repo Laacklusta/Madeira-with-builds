@@ -124,6 +124,21 @@ static void tft_note(uint32_t idx, uint64_t handle, uint64_t result)
     if (result != prev)
     {
         tft_emit( "CHANGE", idx, handle, result, n );
+        /* ml736: when end-of-stream first goes true, dump EVERY counter and
+         * last return in one place. Without this the log only shows state
+         * changes and a 4,096-call heartbeat, so "the caller stopped polling"
+         * and "the caller kept polling and kept getting the same answer" look
+         * identical -- and so do "the audio reader was called once" and "it was
+         * called 4,000 times returning the same count". Both distinctions were
+         * asserted from the log when the log could not support them. The
+         * counters already exist; this just prints them at the one moment that
+         * matters. */
+        if (idx == TF_EOS && result)
+        {
+            int k;
+            for (k = 0; k < TFT_SLOTS; k++)
+                tft_emit( "ATEOS ", (uint32_t)k, tft_last_handle[k], tft_last[k], tft_calls[k] );
+        }
         return;
     }
     if (n == 1) { tft_emit( "FIRST ", idx, handle, result, n ); return; }
@@ -169,6 +184,97 @@ __declspec(dllexport) void tft_tf_close(void **f)
 {
     tft_note(TF_CLOSE, (uint64_t)(uintptr_t)(f ? *f : 0), 0);
     ((fn_close)tft_real[TF_CLOSE])(f);
+}
+
+
+/* ================= ml736 FAudio voice tracing =================
+ *
+ * The cutscene is silent while the splash is not, and the video's audio
+ * reader was seen returning a count once. FNA streams video audio through a
+ * DynamicSoundEffectInstance, which polls FAudioSourceVoice_GetState,
+ * compares BuffersQueued, and only then asks managed code for more data --
+ * so the queue state is what decides whether playback ever completes.
+ *
+ * Every line carries the voice pointer, because the splash and the video are
+ * different voices and conflating them would make the trace meaningless.
+ */
+typedef struct { void *ctx; uint32_t BuffersQueued; uint64_t SamplesPlayed; } FAVoiceState;
+typedef struct { uint32_t Flags; uint32_t AudioBytes; const uint8_t *pAudioData; } FABufferHead;
+
+enum { FA_CREATE = 0, FA_START, FA_SUBMIT, FA_GETSTATE, FA_STOP, FA_DESTROY, FA_SLOTS };
+__declspec(dllexport) void *fa_real[FA_SLOTS];
+__declspec(dllexport) volatile uint64_t fa_calls[FA_SLOTS];
+
+static void fa_emit(const char *what, void *voice, uint64_t a, uint64_t b, uint64_t n)
+{
+    char buf[200], *o = buf;
+    o = tft_str( o, "[fa-trace] ml736 " );
+    o = tft_str( o, what );
+    o = tft_str( o, " voice=" ); o = tft_hex( o, (uint64_t)(uintptr_t)voice );
+    o = tft_str( o, " a=" );     o = tft_hex( o, a );
+    o = tft_str( o, " b=" );     o = tft_hex( o, b );
+    o = tft_str( o, " call#" );  o = tft_hex( o, n );
+    *o++ = '\n'; *o = 0;
+    OutputDebugStringA( buf );
+}
+
+typedef uint32_t (*fn_create)(void*, void**, const void*, uint32_t, float, void*, const void*, const void*);
+typedef uint32_t (*fn_start)(void*, uint32_t, uint32_t);
+typedef uint32_t (*fn_submit)(void*, const void*, const void*);
+typedef void     (*fn_getstate)(void*, FAVoiceState*, uint32_t);
+typedef uint32_t (*fn_stop)(void*, uint32_t, uint32_t);
+typedef void     (*fn_destroy)(void*);
+
+__declspec(dllexport) uint32_t fa_CreateSourceVoice(void *fa, void **ppv, const void *fmt,
+        uint32_t flags, float ratio, void *cb, const void *sends, const void *fx)
+{
+    uint32_t r = ((fn_create)fa_real[FA_CREATE])(fa, ppv, fmt, flags, ratio, cb, sends, fx);
+    fa_emit( "CREATE  ", ppv ? *ppv : 0, r, (uint64_t)(uintptr_t)cb, ++fa_calls[FA_CREATE] );
+    return r;
+}
+
+__declspec(dllexport) uint32_t fa_Start(void *v, uint32_t f, uint32_t op)
+{
+    uint32_t r = ((fn_start)fa_real[FA_START])(v, f, op);
+    fa_emit( "START   ", v, r, 0, ++fa_calls[FA_START] );
+    return r;
+}
+
+__declspec(dllexport) uint32_t fa_SubmitSourceBuffer(void *v, const void *b, const void *wma)
+{
+    uint32_t bytes = b ? ((const FABufferHead *)b)->AudioBytes : 0;
+    uint32_t r = ((fn_submit)fa_real[FA_SUBMIT])(v, b, wma);
+    fa_emit( "SUBMIT  ", v, bytes, r, ++fa_calls[FA_SUBMIT] );
+    return r;
+}
+
+/* Polled every frame, so report only when the queue depth actually changes or
+ * playback stalls -- otherwise this becomes the thing being measured. */
+__declspec(dllexport) void fa_GetState(void *v, FAVoiceState *st, uint32_t flags)
+{
+    static void *last_voice; static uint32_t last_q = 0xffffffff; static uint64_t last_played;
+    uint64_t n = ++fa_calls[FA_GETSTATE];
+    ((fn_getstate)fa_real[FA_GETSTATE])(v, st, flags);
+    if (!st) return;
+    if (v != last_voice || st->BuffersQueued != last_q ||
+        (!(n % 4096) && st->SamplesPlayed == last_played))
+    {
+        fa_emit( "STATE   ", v, st->BuffersQueued, st->SamplesPlayed, n );
+        last_voice = v; last_q = st->BuffersQueued; last_played = st->SamplesPlayed;
+    }
+}
+
+__declspec(dllexport) uint32_t fa_Stop(void *v, uint32_t f, uint32_t op)
+{
+    uint32_t r = ((fn_stop)fa_real[FA_STOP])(v, f, op);
+    fa_emit( "STOP    ", v, r, 0, ++fa_calls[FA_STOP] );
+    return r;
+}
+
+__declspec(dllexport) void fa_DestroyVoice(void *v)
+{
+    fa_emit( "DESTROY ", v, 0, 0, ++fa_calls[FA_DESTROY] );
+    ((fn_destroy)fa_real[FA_DESTROY])(v);
 }
 
 int __stdcall DllMainCRTStartup(void *h, unsigned r, void *x) { (void)h;(void)r;(void)x; return 1; }
