@@ -64,7 +64,7 @@ Do **not** assume that everything outside the submodules is original. It is not.
 
 Rather than claim authorship of whole directories: **original Mythic-authored
 files that do not carry another license notice are licensed under
-LGPL-3.0-or-later.** Files carrying their own copyright or license header are
+GPL-3.0-or-later.** Files carrying their own copyright or license header are
 governed by that header.
 
 ## Microsoft Visual C++ runtime redistributables — NOT DISTRIBUTED

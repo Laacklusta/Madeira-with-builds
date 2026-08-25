@@ -50,12 +50,9 @@ Nettle LGPL-3.0-or-later, FEX-Emu and DXMT MIT); those texts are in
 [`LICENSES/`](LICENSES).
 
 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) has the per-component
-breakdown and records two unresolved issues you should read before
-redistributing: the Microsoft Visual C++ runtime DLLs, which this project does
-not distribute and which you must supply yourself (see
-[`tools/fetch-vcruntime.md`](tools/fetch-vcruntime.md)), and the
-corresponding-source obligation for the statically linked GMP/Nettle/GnuTLS
-binaries.
+breakdown. Note in particular that the Microsoft Visual C++ runtime DLLs are
+not distributed here and must be supplied yourself — see
+[`tools/fetch-vcruntime.md`](tools/fetch-vcruntime.md).
 
 ## A note on upstream contributions
 
