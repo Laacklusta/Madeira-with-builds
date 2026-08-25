@@ -90,7 +90,10 @@ wine-ios-build/
 
 # StikDebug scripts (reference only)
 MeloNX.js
-build/gnutls-ios/src/
+build/gnutls-ios/src/*
+!build/gnutls-ios/src/*.tar.*
+!build/gnutls-ios/src/SHA256SUMS
+
 build/gnutls-ios/obj/
 
 # Reference/scratch material — not build inputs
@@ -104,3 +107,9 @@ photorec.se2
 clean-prefix/
 build/x64-tests/asmconf_gen/
 build/x64-tests/asmconf_obj/
+
+# Microsoft Visual C++ runtime redistributables.
+# Microsoft-authored binaries, redistributable only under the Visual Studio
+# redistributable terms and only unmodified. Not ours to ship -- obtain them
+# yourself, see tools/fetch-vcruntime.md.
+app/Mythic/x86_64-vcruntime/*.dll
