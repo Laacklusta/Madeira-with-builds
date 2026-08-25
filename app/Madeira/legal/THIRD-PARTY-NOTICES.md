@@ -76,16 +76,21 @@ this project's license and are **no longer tracked in this repository**;
 `app/Madeira/x86_64-vcruntime/*.dll` is gitignored and must be supplied locally.
 See `tools/fetch-vcruntime.md`.
 
-### Earlier malformed copies were purged from history
+### Known defect in this repository's history
 
-Twelve such DLLs were previously committed here, and they had been modified:
-each one's Authenticode signature had been truncated away, removing exactly the
-advertised certificate payload and leaving a PE header still claiming a
-signature the file no longer contained.
+Twelve such DLLs were previously committed here, and they had been **modified**:
+each one's Authenticode signature was truncated away in commit `41f0d74`,
+removing exactly the advertised certificate payload (for example
+`concrt140.dll`, 321,696 bytes down to 301,056 -- precisely the 20,640-byte
+certificate table). In each file the certificate offset in the PE header equals
+the file's own length, so the signature is entirely absent while the header
+still claims it is present.
 
-Those blobs have been removed from this repository's history entirely. Anyone
-holding a clone or fork taken before the rewrite may still have them, and should
-not redistribute those copies.
+Microsoft's redistribution permission applies to eligible files unmodified, so
+those copies should not be redistributed by anyone. That commit is already in
+published history, so removing the files going forward does not remove them from
+the past; rewriting history is the only way to do that, and it has not been
+done. This is recorded here so the state of the repository is not misrepresented.
 
 ## Corresponding source for the statically linked libraries
 
