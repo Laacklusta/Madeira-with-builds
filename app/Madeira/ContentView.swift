@@ -1998,6 +1998,19 @@ struct ContentView: View {
             winios_phase("pool-ready")
             logStore.log("BRK suspension lasted \(String(format: "%.2f", elapsed))s")
 
+            // ml758: wmtcmd census. Documents/madeira-census.txt == "1" counts
+            // which of the 59 render/compute/blit command types a workload
+            // actually emits, and how large their sidecar data gets. Needed
+            // before serialising wmtcmd_* for the remote Metal transport --
+            // building a schema for all 59 on speculation would be weeks of
+            // work for commands no title may ever issue.
+            if let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+               let txt = try? String(contentsOf: d.appendingPathComponent("madeira-census.txt"), encoding: .utf8) {
+                let v = txt.trimmingCharacters(in: .whitespacesAndNewlines)
+                setenv("DXMT_CMD_CENSUS", v, 1)
+                logStore.log("wmtcmd census: DXMT_CMD_CENSUS=\(v) via madeira-census.txt")
+            }
+
             // ml757: FEX arena placeholder. Documents/madeira-arena.txt == "1"
             // makes Wine reserve FEX's host arena before any PE loads. OFF by
             // default: FEX still selects its own band, and on hardware that
