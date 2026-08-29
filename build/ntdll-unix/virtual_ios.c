@@ -14901,8 +14901,23 @@ void ios_reserve_fex_arena(void)
      * Documents/madeira-arena.txt = 1, which is how the VM keeps testing it
      * while hardware stays on the proven path. */
     {
+        /* ml786: the placeholder path is UNAVAILABLE, not merely off by default.
+         *
+         * Wine reserves a band; the emulator still runs its own selector and
+         * picks a different one. Holding 8GB therefore pushes it into whatever
+         * is left, and when that band is exhausted its 16MB requests fail, a
+         * thread-creation path dereferences the NULL, the recursive fault
+         * exhausts that thread's stack, and the thread dies OWNING
+         * loader_section -- so the next module load blocks forever and the
+         * process wedges with no error anywhere.
+         *
+         * An earlier change widened the search from three candidates to nine so
+         * it would stop failing. That made an unfinished feature succeed more
+         * often, which is the wrong direction: while the emulator selects
+         * independently, a FAILED reservation is the safe outcome. The opt-in
+         * returns only once it consumes WINE_IOS_FEX_ARENA_BASE/SIZE. */
         const char *opt = getenv( "MADEIRA_FEX_ARENA" );
-        if (!opt || opt[0] != '1')
+        if (1 || !opt || opt[0] != '1')
         {
             dprintf( 2, "[fex-arena] ml757 disabled (MADEIRA_FEX_ARENA != 1) -- FEX selects its "
                         "own band, as before. Enable only once FEX consumes the published range.\n" );
