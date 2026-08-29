@@ -92,7 +92,38 @@ Per-call latency is 0.06 ms, but that alone never justified "transport is not
 the bottleneck" — bulk transfer and command decoding had to be measured
 separately, and are above.
 
+## Presentation — done
+
+2000 frames from the guest into a real macOS window on the host GPU:
+
+```
+presented      2000/2000 frames
+no-drawable    0        (answered with a status, never hung)
+frame submit   mean 0.91 ms   worst 15.68 ms   -> ~1100 FPS ceiling
+live handles   11       (unchanged from setup: no per-frame leak)
+drawable reuse BAD_HANDLE (consumed by submit, as intended)
+```
+
+Design points that matter:
+
+- **AppKit owns the main thread**, RPC runs on a worker. Window creation happens
+  directly on main -- `dispatch_sync` to the main queue *from* main, before
+  `[NSApp run]`, is an immediate self-deadlock. `dispatch_sync` is used only
+  from the RPC thread, which is where it is correct.
+- **`presentDrawable` is encoded on the same command buffer as the draw, before
+  commit.** Presenting from a separate call after that buffer had committed
+  would race the display.
+- `allowsNextDrawableTimeout = YES`, and a timeout returns `RM_ERR_NO_DRAWABLE`
+  — an answer, not a hung RPC thread.
+- A drawable is single-use, so submit consumes **both** its handles. Releasing
+  only the drawable leaked one texture handle per frame, which a 600-frame run
+  made obvious at 611 live handles.
+
+⚠️ Resize is implemented (the layer is resized to the window each acquisition)
+but **not exercised** — the automated run never resizes, so `resizes observed`
+was 0. Minimise/close/reopen are likewise untested.
+
 ## Next
 
-Host window and drawable presentation, then converting winemetal's real
-`wmtcmd_*` lists into contiguous records so DXMT can drive this path.
+Convert winemetal's real `wmtcmd_*` lists into validated contiguous records,
+then point winemetal at this backend and drive it with the ARM64 D3D11 cube.

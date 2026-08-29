@@ -14,6 +14,7 @@
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <sys/time.h>
+#include <math.h>
 #include "../protocol.h"
 
 static int g_fd;
@@ -56,7 +57,10 @@ static uint32_t call(uint16_t op, const void *arg, uint32_t arglen,
         if (rd(g_fd, sink, c)) return 0xffffffff;
         left -= c;
     }
-    if (outlen) *outlen = n;
+    /* Report what was COPIED, not what was on the wire. Reporting the wire
+     * length after a truncated copy invites the caller to read past its own
+     * buffer -- the same class of bug as sizing a buffer from the wire. */
+    if (outlen) *outlen = take;
     return r.status;
 }
 
@@ -214,6 +218,7 @@ int main(int argc, char **argv) {
     uint8_t pass[sizeof(struct rm_render_pass) + 256];
     struct rm_render_pass *rp = (void *)pass;
     rp->queue = queue; rp->color_texture = tex;
+    rp->present_drawable = 0;      /* offscreen: nothing to present */
     rp->clear_r = 0.0; rp->clear_g = 0.0; rp->clear_b = 0.0; rp->clear_a = 1.0;
     uint8_t *c = pass + sizeof *rp; uint32_t cb = 0;
     struct rm_enc_viewport *vp = (void *)(c + cb);
@@ -294,6 +299,7 @@ int main(int argc, char **argv) {
     for (int n = 1; n <= 1000; n *= 10) {
         struct rm_render_pass *bp = (void *)big_pass;
         bp->queue = queue; bp->color_texture = tex;
+        bp->present_drawable = 0;
         bp->clear_r = 0; bp->clear_g = 0; bp->clear_b = 0; bp->clear_a = 1;
         uint8_t *cc = big_pass + sizeof *bp; uint32_t nb2 = 0;
         struct rm_enc_pipeline *p0 = (void *)(cc + nb2);
@@ -323,8 +329,91 @@ int main(int argc, char **argv) {
                n, nb2, samples[15], samples[28]);
     }
 
+    /* ================= presentation ================= */
+    int frames = (argc > 2) ? atoi(argv[2]) : 600;
+    printf("\n  [presentation: %d frames to the host window]\n", frames);
+    struct rm_ret_drawable rd;
+    uint32_t no_drawable = 0, presented = 0, resizes = 0;
+    uint64_t last_w = 0, last_h = 0;
+    double  worst = 0, total = 0;
+
+    for (int f = 0; f < frames; f++) {
+        uint32_t n2 = 0;
+        st = call(RM_OP_NEXT_DRAWABLE, NULL, 0, &rd, sizeof rd, &n2);
+        if (st == RM_ERR_NO_DRAWABLE) {   /* an ANSWER, not a hang */
+            no_drawable++;
+            continue;
+        }
+        if (st != RM_OK) { printf("    nextDrawable failed: %s\n", statname(st)); break; }
+        if (rd.width != last_w || rd.height != last_h) {
+            if (last_w) resizes++;
+            last_w = rd.width; last_h = rd.height;
+        }
+
+        /* animate so the window visibly moves: rotate the triangle */
+        double a = f * 0.03;
+        float vx[6];
+        for (int i = 0; i < 3; i++) {
+            double th = a + i * 2.0943951;      /* 120 degrees apart */
+            vx[i*2+0] = (float)(0.7 * cos(th));
+            vx[i*2+1] = (float)(0.7 * sin(th));
+        }
+        uint8_t vb[sizeof(struct rm_new_buffer) + sizeof vx];
+        struct rm_new_buffer *nvb = (void *)vb;
+        nvb->device = dev; nvb->length = sizeof vx;
+        memcpy(vb + sizeof *nvb, vx, sizeof vx);
+        call(RM_OP_NEW_BUFFER, vb, sizeof vb, &rh, sizeof rh, NULL);
+        uint64_t fbuf = rh.handle;
+
+        uint8_t fp[sizeof(struct rm_render_pass) + 256];
+        struct rm_render_pass *frp = (void *)fp;
+        frp->queue = queue;
+        frp->color_texture = rd.texture;
+        frp->present_drawable = rd.drawable;    /* presented on THIS cmdbuf */
+        frp->clear_r = 0.05; frp->clear_g = 0.05; frp->clear_b = 0.12; frp->clear_a = 1.0;
+        uint8_t *fc = fp + sizeof *frp; uint32_t fb2 = 0;
+        struct rm_enc_viewport *fv = (void *)(fc + fb2);
+        fv->h.type = RM_ENC_SET_VIEWPORT; fv->h.size = sizeof *fv;
+        fv->x = 0; fv->y = 0; fv->w = (double)rd.width; fv->h_ = (double)rd.height;
+        fv->znear = 0; fv->zfar = 1; fb2 += sizeof *fv;
+        struct rm_enc_pipeline *fpl = (void *)(fc + fb2);
+        fpl->h.type = RM_ENC_SET_PIPELINE; fpl->h.size = sizeof *fpl; fpl->pipeline = pso;
+        fb2 += sizeof *fpl;
+        struct rm_enc_vbuf *fvb = (void *)(fc + fb2);
+        fvb->h.type = RM_ENC_SET_VERTEX_BUFFER; fvb->h.size = sizeof *fvb;
+        fvb->buffer = fbuf; fvb->offset = 0; fvb->index = 0; fb2 += sizeof *fvb;
+        struct rm_enc_draw *fd2 = (void *)(fc + fb2);
+        fd2->h.type = RM_ENC_DRAW; fd2->h.size = sizeof *fd2;
+        fd2->primitive = 3; fd2->start = 0; fd2->count = 3; fb2 += sizeof *fd2;
+        frp->cmd_bytes = fb2;
+
+        double f0 = now_ms();
+        st = call(RM_OP_SUBMIT_RENDER_PASS, fp, (uint32_t)(sizeof *frp + fb2), &ru, sizeof ru, NULL);
+        double fms = now_ms() - f0;
+        total += fms; if (fms > worst) worst = fms;
+        if (st == RM_OK) presented++;
+
+        struct rm_arg_handle rb = { fbuf };
+        call(RM_OP_RELEASE, &rb, sizeof rb, NULL, 0, NULL);
+
+        /* the drawable handle was consumed by submit -- reusing it must fail */
+        if (f == 0) {
+            struct rm_arg_handle stale = { rd.drawable };
+            uint32_t s2 = call(RM_OP_RELEASE, &stale, sizeof stale, NULL, 0, NULL);
+            printf("    drawable reuse    -> %s  %s\n", statname(s2),
+                   s2 != RM_OK ? "(consumed by submit, as intended)" : "*** STILL LIVE ***");
+        }
+    }
+    printf("    presented         %u/%d frames\n", presented, frames);
+    printf("    no-drawable       %u (answered, never hung)\n", no_drawable);
+    printf("    resizes observed  %u  (last %llux%llu)\n", resizes,
+           (unsigned long long)last_w, (unsigned long long)last_h);
+    if (presented) printf("    frame submit      mean %.2f ms  worst %.2f ms  -> %.0f FPS ceiling\n",
+                          total / presented, worst, 1000.0 / (total / presented));
+
     call(RM_OP_STATS, NULL, 0, &ru, sizeof ru, NULL);
-    printf("\n  live handles on host: %llu\n", (unsigned long long)ru.value);
+    printf("\n  live handles on host: %llu  %s\n", (unsigned long long)ru.value,
+           ru.value < 32 ? "(no per-frame leak)" : "*** LEAKING ***");
     close(g_fd);
     return 0;
 }

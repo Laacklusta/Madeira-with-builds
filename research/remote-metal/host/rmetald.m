@@ -6,6 +6,9 @@
  */
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#import <Cocoa/Cocoa.h>
+#import <QuartzCore/CAMetalLayer.h>
+#include <pthread.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -70,6 +73,43 @@ static uint32_t rm_release_handle(uint64_t h) {
     g_slots[slot].generation++;      /* invalidates every outstanding handle */
     g_live--;
     return RM_OK;
+}
+
+/* ---- host window ------------------------------------------------------
+ *
+ * AppKit owns the main thread; RPC runs on a worker. Every window and layer
+ * mutation is bounced to the main queue, because touching either from the
+ * socket thread is undefined and fails intermittently rather than loudly.
+ */
+static NSWindow    *g_window;
+static CAMetalLayer *g_layer;
+
+static void host_window_build(id<MTLDevice> dev) {
+        NSRect r = NSMakeRect(120, 120, 640, 480);
+        g_window = [[NSWindow alloc] initWithContentRect:r
+            styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                       NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable)
+            backing:NSBackingStoreBuffered defer:NO];
+        [g_window setTitle:@"Madeira remote Metal"];
+        g_layer = [CAMetalLayer layer];
+        g_layer.device = dev;
+        g_layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+        g_layer.framebufferOnly = NO;          /* readback allowed for verification */
+        /* Bounded acquisition: a drawable that never arrives must become an
+         * ANSWER, not a hung RPC thread. */
+        g_layer.allowsNextDrawableTimeout = YES;
+        NSView *v = [g_window contentView];
+        [v setWantsLayer:YES];
+        [v setLayer:g_layer];
+        g_layer.frame = v.bounds;
+        g_layer.drawableSize = CGSizeMake(v.bounds.size.width, v.bounds.size.height);
+        [g_window makeKeyAndOrderFront:nil];
+}
+
+/* Safe from either thread: build directly when already on main. */
+static void host_window_create(id<MTLDevice> dev) {
+    if ([NSThread isMainThread]) host_window_build(dev);
+    else dispatch_sync(dispatch_get_main_queue(), ^{ host_window_build(dev); });
 }
 
 /* ---- framed IO --------------------------------------------------------- */
@@ -276,10 +316,15 @@ static void serve(int fd) {
         }
         case RM_OP_SUBMIT_RENDER_PASS: {
             struct rm_render_pass *a = (void *)payload;
+            /* A producer that forgets to zero present_drawable would send
+             * stack garbage here, and resolving it silently fails the whole
+             * pass with a confusing STALE_HANDLE. Validate it as a handle only
+             * when non-zero, and say which field was wrong. */
             if (h.payload_len < sizeof *a ||
                 a->cmd_bytes > h.payload_len - sizeof *a) {   /* stream must fit the frame */
                 reply(fd,&h,RM_ERR_SHORT_PAYLOAD,NULL,0); break;
             }
+            uint32_t err2 = RM_OK;
             id q = rm_resolve(a->queue, &err);          if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
             id tex = rm_resolve(a->color_texture, &err); if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
             MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -337,9 +382,65 @@ static void serve(int fd) {
             }
             [enc endEncoding];
             if (bad) { reply(fd, &h, err ? err : RM_ERR_BAD_OPCODE, NULL, 0); break; }
+            /* Present on THIS command buffer, before commit -- Metal's
+             * intended sequencing. Presenting from a separate call after this
+             * buffer had committed would race the display. */
+            if (a->present_drawable) {
+                id d = rm_resolve(a->present_drawable, &err);
+                if (err != RM_OK) {
+                    fprintf(stderr, "[rmetald] present_drawable=%llu invalid (%u) -- "
+                            "an uninitialised field in the caller's render pass?\n",
+                            (unsigned long long)a->present_drawable, err);
+                    reply(fd,&h,err,NULL,0); break;
+                }
+                [cb presentDrawable:(id<CAMetalDrawable>)d];
+            }
             [cb commit];
             [cb waitUntilCompleted];   /* synchronous by design */
+            /* Consume the drawable AND its texture. A drawable is single-use,
+             * and NEXT_DRAWABLE interns two handles for it -- releasing only
+             * the drawable leaked one texture handle per frame, which a 600
+             * frame run made obvious (611 live handles). The texture belongs
+             * to the drawable, so its handle dies with it. */
+            if (a->present_drawable) {
+                id dd = rm_resolve(a->present_drawable, &err2);
+                if (!err2 && dd) {
+                    id dtex = [(id<CAMetalDrawable>)dd texture];
+                    for (uint32_t i = 0; i < g_slot_count; i++)
+                        if (g_slots[i].in_use && g_slots[i].obj == dtex) {
+                            rm_release_handle(RM_HANDLE(g_slots[i].generation, i));
+                            break;
+                        }
+                }
+                rm_release_handle(a->present_drawable);
+            }
             struct rm_ret_u64 r = { (uint64_t)[cb status] };
+            reply(fd, &h, RM_OK, &r, sizeof r); break;
+        }
+        case RM_OP_LAYER_SIZE: {
+            __block CGSize sz = CGSizeZero;
+            dispatch_sync(dispatch_get_main_queue(), ^{ sz = g_layer.drawableSize; });
+            struct rm_ret_drawable r = { 0, 0, (uint64_t)sz.width, (uint64_t)sz.height };
+            reply(fd, &h, RM_OK, &r, sizeof r); break;
+        }
+        case RM_OP_NEXT_DRAWABLE: {
+            __block id<CAMetalDrawable> d = nil;
+            __block CGSize sz = CGSizeZero;
+            dispatch_sync(dispatch_get_main_queue(), ^{
+                /* keep the layer sized to the window; a resize otherwise
+                 * presents into a stale drawable size */
+                NSView *v = [g_window contentView];
+                g_layer.frame = v.bounds;
+                CGFloat s = g_window.backingScaleFactor ?: 1.0;
+                CGSize want = CGSizeMake(v.bounds.size.width * s, v.bounds.size.height * s);
+                if (!CGSizeEqualToSize(want, g_layer.drawableSize) && want.width > 0)
+                    g_layer.drawableSize = want;
+                sz = g_layer.drawableSize;
+                d = [g_layer nextDrawable];
+            });
+            if (!d) { reply(fd, &h, RM_ERR_NO_DRAWABLE, NULL, 0); break; }
+            struct rm_ret_drawable r = { rm_intern(d), rm_intern(d.texture),
+                                         (uint64_t)sz.width, (uint64_t)sz.height };
             reply(fd, &h, RM_OK, &r, sizeof r); break;
         }
         case RM_OP_TEXTURE_GETBYTES: {
@@ -378,6 +479,32 @@ static int authenticate(int fd) {
     return 1;
 }
 
+static int g_listen_fd;
+
+static void *rpc_thread(void *unused) {
+    (void)unused;
+    for (;;) {
+        int c = accept(g_listen_fd, NULL, NULL);
+        if (c < 0) continue;
+        int one = 1;
+        setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+        setsockopt(c, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+        struct timeval tv = { .tv_sec = 30 };
+        setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+        setsockopt(c, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+        if (!authenticate(c)) {
+            fprintf(stderr, "[rmetald] rejected unauthenticated client\n");
+            close(c); continue;
+        }
+        fprintf(stderr, "[rmetald] client authenticated\n");
+        serve(c);
+        close(c);
+        fprintf(stderr, "[rmetald] client gone; releasing %u session handles\n", g_live);
+        rm_reset_table();
+    }
+    return NULL;
+}
+
 int main(int argc, char **argv) {
     @autoreleasepool {
         id<MTLDevice> d = MTLCreateSystemDefaultDevice();
@@ -400,18 +527,20 @@ int main(int argc, char **argv) {
     }
     if (bind(s, (struct sockaddr *)&a, sizeof a) || listen(s, 4)) { perror("bind/listen"); return 1; }
     fprintf(stderr, "[rmetald] listening on %s:%d (token required)\n", bind_addr, RM_PORT);
-    for (;;) {
-        int c = accept(s, NULL, NULL);
-        if (c < 0) continue;
-        setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
-        if (!authenticate(c)) {
-            fprintf(stderr, "[rmetald] rejected unauthenticated client\n");
-            close(c); continue;
-        }
-        fprintf(stderr, "[rmetald] client authenticated\n");
-        serve(c);
-        close(c);
-        fprintf(stderr, "[rmetald] client gone; releasing %u session handles\n", g_live);
-        rm_reset_table();
+    g_listen_fd = s;
+
+    /* AppKit owns the main thread; RPC runs on a worker. The window is created
+     * here, directly -- NOT via dispatch_sync to the main queue, which from the
+     * main thread before [NSApp run] is an immediate deadlock. dispatch_sync is
+     * only correct from the RPC thread, where it is used. */
+    @autoreleasepool {
+        [NSApplication sharedApplication];
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+        host_window_create(MTLCreateSystemDefaultDevice());
+        [NSApp activateIgnoringOtherApps:YES];
+        pthread_t t;
+        pthread_create(&t, NULL, rpc_thread, NULL);
+        [NSApp run];
     }
+    return 0;
 }

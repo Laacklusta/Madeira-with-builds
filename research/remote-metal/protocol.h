@@ -51,7 +51,13 @@ enum rm_op {
     RM_OP_NEW_RENDER_PIPELINE, /* device, vfn, ffn, fmt -> handle         */
     RM_OP_SUBMIT_RENDER_PASS,  /* one round trip: encode, commit, wait    */
     RM_OP_TEXTURE_GETBYTES,    /* texture -> raw pixels                   */
+
+    /* --- presentation ------------------------------------------------- */
+    RM_OP_NEXT_DRAWABLE,       /* -> drawable+texture, or RM_ERR_NO_DRAWABLE */
+    RM_OP_LAYER_SIZE,          /* -> current host layer size                 */
 };
+
+struct rm_ret_drawable { uint64_t drawable; uint64_t texture; uint64_t width; uint64_t height; };
 
 /* ---- contiguous command stream -----------------------------------------
  *
@@ -82,6 +88,12 @@ struct rm_enc_viewport { struct rm_enc_hdr h; double x, y, w, h_, znear, zfar; }
 struct rm_render_pass {
     uint64_t queue;
     uint64_t color_texture;
+    /* When non-zero, presentDrawable is encoded on the SAME command buffer
+     * before commit -- which is Metal's intended sequencing. Presenting from a
+     * separate call after the render buffer has already committed would be
+     * wrong. The handle is consumed and invalidated by this submit, so a
+     * drawable cannot leak or be presented twice. */
+    uint64_t present_drawable;
     double   clear_r, clear_g, clear_b, clear_a;
     uint32_t cmd_bytes;
     uint32_t reserved;
@@ -100,6 +112,7 @@ enum rm_status {
     RM_ERR_BAD_HANDLE,     /* out of range / never allocated            */
     RM_ERR_WRONG_CLASS,    /* handle valid but not the expected class   */
     RM_ERR_SHORT_PAYLOAD,
+    RM_ERR_NO_DRAWABLE,    /* nextDrawable timed out -- a distinct answer, not a hang */
 };
 
 /* Every frame, both directions. payload_len counts bytes AFTER this header. */
