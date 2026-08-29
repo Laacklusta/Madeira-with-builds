@@ -1,0 +1,135 @@
+/* Round-trip and malformed-input tests for the command wire format.
+ *
+ * Run BEFORE exposing the decoder to DXMT. A wire format that only gets
+ * exercised by real traffic fails as corruption on a remote GPU, which is
+ * among the worst things to debug -- the symptom appears in pixels, one
+ * machine away from the cause.
+ */
+#include "../wmt_pack.h"
+#include <stdio.h>
+#include <stdlib.h>
+
+static int fails, checks;
+#define CHECK(c, msg) do { checks++; if (!(c)) { fails++; \
+    printf("  FAIL %-46s (%s:%d)\n", msg, __FILE__, __LINE__); } } while (0)
+
+/* Walk a batch the way the host decoder must: by record size, bounded, never
+ * trusting a length from the wire. */
+static int walk(const uint8_t *rec, uint32_t bytes, uint32_t sidecar_bytes,
+                uint32_t *seen, uint32_t *bad_at) {
+    uint32_t off = 0, n = 0;
+    while (off + sizeof(struct wmtw_hdr) <= bytes) {
+        const struct wmtw_hdr *h = (const void *)(rec + off);
+        if (h->version != WMTW_VERSION)               { *bad_at = n; return -1; }
+        if (h->size < sizeof *h)                      { *bad_at = n; return -2; }
+        if (off + h->size > bytes)                    { *bad_at = n; return -3; }
+        if (n >= WMTW_MAX_RECORDS)                    { *bad_at = n; return -4; }
+        /* sidecar-bearing records must reference a range inside the region */
+        if (h->op == WMTW_OP_SetFragmentBytes) {
+            const struct wmtw_setfragmentbytes *r = (const void *)h;
+            if (r->bytes_count > WMTW_MAX_SIDECAR_BYTES)          { *bad_at = n; return -5; }
+            if ((uint64_t)r->bytes_offset + r->bytes_count > sidecar_bytes) { *bad_at = n; return -6; }
+        }
+        if (h->op == WMTW_OP_SetViewports) {
+            const struct wmtw_setviewports *r = (const void *)h;
+            if (r->viewports_count > WMTW_MAX_ARRAY_COUNT)        { *bad_at = n; return -5; }
+            uint64_t need = (uint64_t)r->viewports_count * sizeof(struct wmtw_viewport);
+            if ((uint64_t)r->viewports_offset + need > sidecar_bytes) { *bad_at = n; return -6; }
+        }
+        off += h->size; n++;
+    }
+    *seen = n;
+    return (off == bytes) ? 0 : -7;
+}
+
+int main(void) {
+    static uint8_t recbuf[WMTW_MAX_BATCH_BYTES], sidebuf[WMTW_MAX_SIDECAR_BYTES];
+    struct wmtw_packer p = { recbuf, sizeof recbuf, 0, sidebuf, sizeof sidebuf, 0, 0 };
+
+    printf("wire round-trip, version %d, %d record types\n", WMTW_VERSION, WMTW_OP_COUNT);
+
+    /* --- one of every record type --- */
+    #define R(T, OP) struct wmtw_##T *T = wmtw_rec_alloc(&p, sizeof *T, OP); CHECK(T, #OP " alloc")
+    R(nop, WMTW_OP_Nop);
+    R(useresource, WMTW_OP_UseResource);       useresource->resource = 0x1111;
+    R(setvertexbuffer, WMTW_OP_SetVertexBuffer); setvertexbuffer->buffer = 0x2222;
+    R(setvertexbufferoffset, WMTW_OP_SetVertexBufferOffset);
+    R(setfragmentbuffer, WMTW_OP_SetFragmentBuffer);
+    R(setfragmenttexture, WMTW_OP_SetFragmentTexture); setfragmenttexture->texture = 0x3333;
+    R(setrasterizerstate, WMTW_OP_SetRasterizerState);
+    R(setpso, WMTW_OP_SetPSO);                 setpso->pso = 0x4444;
+    R(setdsso, WMTW_OP_SetDSSO);
+    R(setblendfactorandstencilref, WMTW_OP_SetBlendFactorAndStencilRef);
+    R(draw, WMTW_OP_Draw);                     draw->count = 3;
+    R(drawindexed, WMTW_OP_DrawIndexed);       drawindexed->index_count = 6;
+
+    /* sidecar-bearing: bytes, viewports, scissors */
+    uint8_t payload[12] = {1,2,3,4,5,6,7,8,9,10,11,12};
+    struct wmtw_setfragmentbytes *fb = wmtw_rec_alloc(&p, sizeof *fb, WMTW_OP_SetFragmentBytes);
+    fb->index = 0;
+    fb->bytes_offset = wmtw_side_put(&p, payload, sizeof payload);
+    fb->bytes_count  = sizeof payload;
+    CHECK(fb->bytes_offset != 0xffffffffu, "setFragmentBytes sidecar stored");
+
+    struct wmtw_viewport vp = { 0, 0, 640, 480, 0, 1 };
+    struct wmtw_setviewports *sv = wmtw_rec_alloc(&p, sizeof *sv, WMTW_OP_SetViewports);
+    sv->viewports_offset = wmtw_side_put(&p, &vp, sizeof vp);
+    sv->viewports_count  = 1;
+
+    struct wmtw_scissor sc = { 0, 0, 640, 480 };
+    struct wmtw_setscissorrects *ss = wmtw_rec_alloc(&p, sizeof *ss, WMTW_OP_SetScissorRects);
+    ss->scissors_offset = wmtw_side_put(&p, &sc, sizeof sc);
+    ss->scissors_count  = 1;
+
+    uint32_t seen = 0, bad = 0;
+    int rc = walk(recbuf, p.rec_len, p.side_len, &seen, &bad);
+    CHECK(rc == 0, "well-formed batch walks cleanly");
+    CHECK(seen == 15, "all 15 record types round-trip");
+    printf("  packed %u records, %u record bytes, %u sidecar bytes\n",
+           p.count, p.rec_len, p.side_len);
+
+    /* verify the sidecar survived byte-for-byte */
+    CHECK(memcmp(sidebuf + fb->bytes_offset, payload, sizeof payload) == 0,
+          "sidecar bytes identical after packing");
+    struct wmtw_viewport back;
+    memcpy(&back, sidebuf + sv->viewports_offset, sizeof back);
+    CHECK(back.width == 640 && back.height == 480, "viewport survives round-trip");
+
+    /* --- malformed inputs must be REJECTED, not tolerated --- */
+    printf("malformed input\n");
+    uint8_t bad_buf[256];
+    memcpy(bad_buf, recbuf, sizeof bad_buf);
+
+    struct wmtw_hdr *h0 = (void *)bad_buf;
+    uint32_t s0 = h0->size;
+    h0->size = 0;                        /* size smaller than the header */
+    CHECK(walk(bad_buf, 128, 0, &seen, &bad) == -2, "zero-size record rejected");
+    h0->size = 0xffff;                   /* size past the end of the batch */
+    CHECK(walk(bad_buf, 128, 0, &seen, &bad) == -3, "oversized record rejected");
+    h0->size = s0;
+    h0->version = 99;                    /* wrong version */
+    CHECK(walk(bad_buf, 128, 0, &seen, &bad) == -1, "version mismatch rejected");
+    h0->version = WMTW_VERSION;
+
+    /* sidecar reference pointing outside the region */
+    struct wmtw_setfragmentbytes evil = { { WMTW_OP_SetFragmentBytes, WMTW_VERSION, sizeof evil },
+                                          0, 0, 999999 };
+    CHECK(walk((uint8_t *)&evil, sizeof evil, 16, &seen, &bad) == -5,
+          "oversized sidecar count rejected");
+    struct wmtw_setfragmentbytes evil2 = { { WMTW_OP_SetFragmentBytes, WMTW_VERSION, sizeof evil2 },
+                                           0, 8, 100 };
+    CHECK(walk((uint8_t *)&evil2, sizeof evil2, 16, &seen, &bad) == -6,
+          "sidecar range past region rejected");
+    /* integer overflow in offset+count must not wrap into acceptance */
+    struct wmtw_setfragmentbytes evil3 = { { WMTW_OP_SetFragmentBytes, WMTW_VERSION, sizeof evil3 },
+                                           0, 0xfffffff0u, 64 };
+    CHECK(walk((uint8_t *)&evil3, sizeof evil3, 16, &seen, &bad) < 0,
+          "offset+count overflow rejected");
+
+    /* trailing garbage: a batch whose records do not exactly fill it */
+    CHECK(walk(recbuf, p.rec_len - 3, p.side_len, &seen, &bad) != 0,
+          "truncated batch rejected");
+
+    printf("\n%d checks, %d failures\n", checks, fails);
+    return fails != 0;
+}
