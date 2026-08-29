@@ -6712,6 +6712,22 @@ static void *map_free_area( void *base, void *end, size_t size, int top_down, in
     ptrdiff_t step = top_down ? -(align_mask + 1) : (align_mask + 1);
     void *start;
 
+    /* ml749: AN INVERTED WINDOW IS NOT AN EMPTY SEARCH, IT IS A CONFIGURATION
+     * BUG -- SAY SO.
+     *
+     * When a caller's window starts above its end -- which is what happens to
+     * both FEX arena candidates once the host limit is believed to be 32GB,
+     * [496GB,32GB) and [48GB,32GB) -- every loop below is skipped, the scan
+     * reports tries=0 skips=0, and NULL comes back indistinguishable from
+     * "searched hard, genuinely full". The caller then proceeds without an
+     * arena and the real failure surfaces hundreds of instructions later as a
+     * NULL x28 dereference at x28+0x7f0, in a different subsystem, with none of
+     * this context attached. Name it at the point of truth instead. */
+    if (base >= end)
+        dprintf( 2, "[va-scan] ml749 INVERTED WINDOW base=%p >= end=%p size=%p "
+                    "-- nothing will be scanned; caller will see 'no space' that is really 'no window'\n",
+                 base, end, (void *)size );
+
     /* [va-scan] geometry probe — see ios_scan_base. */
     ios_scan_base = base;
     ios_scan_end = end;
@@ -10727,6 +10743,68 @@ static NTSTATUS map_pe_header( void *ptr, size_t size, size_t map_size, int fd, 
 /***********************************************************************
  *           get_host_addr_space_limit
  */
+/***********************************************************************
+ *           ios_va_profile   (ml749)
+ *
+ * Does this task actually have usable VA between 32GB and 63GB?
+ *
+ * On the jailbroken research VM, FEX never gets an arena: both candidate
+ * windows come back FAILED with tries=0, because both START above the ceiling
+ * Wine believes it has --
+ *     [0x7c00000000,0x800000000)  = 496GB..32GB   inverted
+ *     [0x00c00000000,0x800000000) = 48GB..32GB    inverted
+ * -- so the scanner never looks, FEXMem_ThreadState is never allocated, x28
+ * stays NULL and init dereferences x28+0x7f0. cube dies before its first guest
+ * instruction. On the phone the same fallback band works fine, and physical
+ * iOS 26 proves a 64GB regime is sufficient, so the extended 448-512GB regime
+ * is NOT required.
+ *
+ * The suspicion is that Wine UNDERESTIMATES the VM rather than the VM being
+ * incapable. get_host_addr_space_limit() probes only POWERS OF TWO and, since
+ * MAP_FIXED_NOREPLACE does not exist on Darwin, `addr` is a mere HINT the
+ * kernel may ignore -- so an unhonoured hint at 32GB silently demotes the
+ * conclusion to 16GB and reports a 32GB ceiling. By construction it can never
+ * discover that 48-56GB is usable.
+ *
+ * Settle it by ASKING THE KERNEL DIRECTLY at fixed addresses, which is what the
+ * power-of-two hint walk cannot do. mach_vm_allocate with VM_FLAGS_FIXED does
+ * not clobber an existing mapping -- it returns KERN_NO_SPACE -- so this is
+ * safe to run unconditionally, and every success is released immediately.
+ */
+static void ios_va_profile( const char *when )
+{
+    static const struct { unsigned long long addr; const char *band; } probes[] = {
+        { 0x0880000000ULL, "32-40GB" }, { 0x0900000000ULL, "32-40GB" },
+        { 0x0A00000000ULL, "40-48GB" }, { 0x0B00000000ULL, "40-48GB" },
+        { 0x0C00000000ULL, "48-56GB" }, { 0x0D00000000ULL, "48-56GB" },
+        { 0x0E00000000ULL, "56-63GB" }, { 0x0F00000000ULL, "56-63GB" },
+        { 0x7C00000000ULL, "496GB (preferred FEX)" },
+    };
+    task_vm_info_data_t vmi;
+    mach_msg_type_number_t cnt = TASK_VM_INFO_COUNT;
+    unsigned i;
+
+    if (task_info( mach_task_self(), TASK_VM_INFO, (task_info_t)&vmi, &cnt ) == KERN_SUCCESS)
+        dprintf( 2, "[va-profile] ml749 %s TASK_VM_INFO.max_address=%p (%.1f GB)\n",
+                 when, (void *)(uintptr_t)vmi.max_address,
+                 (double)vmi.max_address / (1024.0*1024.0*1024.0) );
+    else
+        dprintf( 2, "[va-profile] ml749 %s TASK_VM_INFO UNAVAILABLE\n", when );
+
+    dprintf( 2, "[va-profile] ml749 %s host_addr_space_limit=%p address_space_limit=%p user_space_limit=%p\n",
+             when, host_addr_space_limit, address_space_limit, user_space_limit );
+
+    for (i = 0; i < ARRAY_SIZE(probes); i++)
+    {
+        mach_vm_address_t a = probes[i].addr;
+        kern_return_t kr = mach_vm_allocate( mach_task_self(), &a, 0x4000, VM_FLAGS_FIXED );
+        dprintf( 2, "[va-profile] ml749 %s fixed 16KB @ 0x%llx (%-22s) -> %s (kr=%d)\n",
+                 when, probes[i].addr, probes[i].band,
+                 kr == KERN_SUCCESS ? "MAPPABLE" : "refused", (int)kr );
+        if (kr == KERN_SUCCESS) mach_vm_deallocate( mach_task_self(), a, 0x4000 );
+    }
+}
+
 static void *get_host_addr_space_limit(void)
 {
     unsigned int flags = MAP_PRIVATE | MAP_ANON;
@@ -10761,7 +10839,44 @@ static void *get_host_addr_space_limit(void)
      * one). Net effect: one pool instead of two. (addr << 1) is already the
      * first UNMAPPABLE address, which is exactly the exclusive bound
      * is_beyond_limit wants, so return it unmodified. */
-    return (void *)(addr << 1);
+    {
+        /* ml749: PREFER THE KERNEL'S OWN ANSWER OVER THE POWER-OF-TWO WALK.
+         *
+         * The loop above can only ever conclude a POWER OF TWO -- 16GB, 32GB,
+         * 64GB, nothing between -- and since MAP_FIXED_NOREPLACE does not exist
+         * on Darwin, `addr` is only a HINT the kernel may decline, which is why
+         * it has to check `ret >= addr`. One unhonoured hint therefore halves
+         * the conclusion. On the jailbroken research VM that lands on 32GB
+         * against a real 63GB ceiling, and every FEX arena window inverts:
+         * [48GB,32GB) scans nothing, FEXMem_ThreadState is never allocated,
+         * x28 stays NULL and cube dies at x28+0x7f0 before its first guest
+         * instruction. Fixed 16KB reservations at 52, 55 and 57GB all succeed
+         * there, so the range is real and only our estimate was wrong.
+         *
+         * TASK_VM_INFO.max_address is the map's actual ceiling and needs no
+         * hint to be honoured. It is EXCLUSIVE, which is what is_beyond_limit()
+         * wants, matching the ml122 note above.
+         *
+         * Only ever RAISE the walk's answer, never lower it: the walk is proven
+         * on hardware, and a device reporting a small or bogus max_address must
+         * not shrink a limit that already works. Both values are logged so the
+         * two can be compared on any device. */
+        void *walked = (void *)(addr << 1);
+        task_vm_info_data_t vmi;
+        mach_msg_type_number_t cnt = TASK_VM_INFO_COUNT;
+
+        if (task_info( mach_task_self(), TASK_VM_INFO, (task_info_t)&vmi, &cnt ) == KERN_SUCCESS)
+        {
+            void *kern = (void *)(uintptr_t)vmi.max_address;
+
+            dprintf( 2, "[va-limit] ml749 walk=%p kernel_max=%p -> %s\n",
+                     walked, kern, kern > walked ? "USING KERNEL (walk underestimated)" : "keeping walk" );
+            if (kern > walked && (uintptr_t)kern >= 0x100000000ULL) return kern;
+        }
+        else dprintf( 2, "[va-limit] ml749 walk=%p kernel_max=UNAVAILABLE -> keeping walk\n", walked );
+
+        return walked;
+    }
 }
 
 #endif /* _WIN64 */
@@ -11793,6 +11908,9 @@ void virtual_init(void)
 #ifdef _WIN64
     host_addr_space_limit = get_host_addr_space_limit();
     TRACE( "host addr space limit: %p\n", host_addr_space_limit );
+    /* ml749: unconditional -- this must be present in the log of the run that
+     * FAILS, and a failing run is exactly when nobody thought to arm a flag. */
+    ios_va_profile( "post-limit" );
 #else
     host_addr_space_limit = address_space_limit;
 #endif
@@ -14706,6 +14824,124 @@ static NTSTATUS get_extended_params( const MEM_EXTENDED_PARAMETER *parameters, U
  *             NtAllocateVirtualMemoryEx   (NTDLL.@)
  *             ZwAllocateVirtualMemoryEx   (NTDLL.@)
  */
+/***********************************************************************
+ *           ios_reserve_fex_arena   (ml756)
+ *
+ * Reserve FEX's host arena as a PLACEHOLDER, before any PE module loads.
+ *
+ * FEX used to pick its own band: probe a 16KB address, reserve 256MB, RELEASE
+ * it, then declare the surrounding 4-8GB its own and hope later allocations
+ * still won it. On the jailbroken research VM that fails two ways, and both
+ * were observed. Sometimes no window exists at selection time -- one launch had
+ * EVERY 4GB window from 32-63GB refuse even 16KB. Other times a window is found
+ * and Wine then fills it: a selected 32-36GB band ended up holding 131 guest
+ * images (PhysX, APEX, steam_api64, even libarm64ecfex), **70 of which were
+ * already there before FEX chose it**, leaving an 11MB largest gap by the time
+ * a 16MB FEX allocation failed. Probing a free hole says nothing about owning
+ * the window.
+ *
+ * So Wine takes the arena first, and the RESERVATION IS THE CAPACITY PROBE --
+ * no probe-and-release. Because the placeholder is a real Wine view, guest DLL
+ * placement is excluded from it as a CONSEQUENCE rather than by a separate
+ * mechanism. FEX later replaces placeholder slices instead of selecting a band.
+ *
+ * Sizes: hardware's dedicated high band is 16GB; the constrained regime wants
+ * 8GB (4GB is demonstrably too tight -- FEX needs ~3.5GB of spans and code for
+ * ~74 threads), with 4GB accepted only as an explicitly-logged limited arena.
+ *
+ * ⚠️ Runs ONCE per Mach task. Pseudo-processes share one address space, so the
+ * arena must be reserved and published process-wide -- they must not each pick
+ * one. The usual "ntdll-unix globals break pseudo-processes" rule is INVERTED
+ * here: sharing is the intent.
+ *
+ * On failure it publishes nothing and returns quietly, leaving FEX's own
+ * selector to behave exactly as before -- a failed reservation must never break
+ * a configuration that works today.
+ */
+void ios_reserve_fex_arena(void)
+{
+    static int done;
+    static const struct { ULONG_PTR lo, hi; SIZE_T size; const char *what; } plan[] = {
+        { 0x7c00000000ull, 0x7fffffffffull, 0x400000000ull, "hardware high band 16GB" },
+        { 0x0800000000ull, 0x0fffffffffull, 0x200000000ull, "constrained 8GB"         },
+        { 0x0800000000ull, 0x0fffffffffull, 0x100000000ull, "constrained 4GB LIMITED" },
+    };
+    unsigned i;
+
+    if (done) return;
+    done = 1;
+
+    /* ml757: OPT-IN. This reservation is only half the design.
+     *
+     * FEX still runs ios_fex_band_select() and picks its own band, and on
+     * hardware its ONLY candidate is [0x7c00000000,0x8000000000) -- exactly
+     * what the 16GB reservation above takes. Reserving it therefore starves
+     * FEX of the arena it was about to choose: no SELECTED line, no
+     * FEXMem_ThreadState, dead before the first window. Shipping this
+     * on-by-default regressed a working phone.
+     *
+     * The reservation is CORRECT and proven -- on the research VM it held 8GB
+     * and kept all 123 guest images out of it, where the previous run had 131
+     * inside FEX's band. It simply cannot be enabled until FEX consumes the
+     * published range instead of selecting one. Until then: opt in with
+     * Documents/madeira-arena.txt = 1, which is how the VM keeps testing it
+     * while hardware stays on the proven path. */
+    {
+        const char *opt = getenv( "MADEIRA_FEX_ARENA" );
+        if (!opt || opt[0] != '1')
+        {
+            dprintf( 2, "[fex-arena] ml757 disabled (MADEIRA_FEX_ARENA != 1) -- FEX selects its "
+                        "own band, as before. Enable only once FEX consumes the published range.\n" );
+            return;
+        }
+    }
+
+    for (i = 0; i < ARRAY_SIZE(plan); i++)
+    {
+        MEM_ADDRESS_REQUIREMENTS req;
+        MEM_EXTENDED_PARAMETER param;
+        NTSTATUS status;
+        void *base = NULL;
+        SIZE_T size = plan[i].size;
+
+        memset( &req, 0, sizeof(req) );
+        memset( &param, 0, sizeof(param) );
+        req.LowestStartingAddress = (void *)plan[i].lo;
+        req.HighestEndingAddress  = (void *)plan[i].hi;
+        req.Alignment             = 0x10000;
+        param.Type    = MemExtendedParameterAddressRequirements;
+        param.Pointer = &req;
+
+        status = NtAllocateVirtualMemoryEx( NtCurrentProcess(), &base, &size,
+                                            MEM_RESERVE | MEM_RESERVE_PLACEHOLDER,
+                                            PAGE_NOACCESS, &param, 1 );
+        if (status)
+        {
+            dprintf( 2, "[fex-arena] ml756 %s: reserve FAILED status=%08x\n",
+                     plan[i].what, (unsigned)status );
+            continue;
+        }
+
+        {
+            char b[64];
+            snprintf( b, sizeof(b), "%llx", (unsigned long long)(ULONG_PTR)base );
+            setenv( "WINE_IOS_FEX_ARENA_BASE", b, 1 );
+            snprintf( b, sizeof(b), "%llx", (unsigned long long)size );
+            setenv( "WINE_IOS_FEX_ARENA_SIZE", b, 1 );
+        }
+        dprintf( 2, "[fex-arena] ml756 RESERVED %s base=%p size=0x%llx -- placeholder held for "
+                    "process lifetime; guest images are excluded from it\n",
+                 plan[i].what, base, (unsigned long long)size );
+        if (i == 2)
+            dprintf( 2, "[fex-arena] ml756 WARNING: only 4GB. Sufficient for small guests; "
+                        "heavy titles are expected to exhaust it.\n" );
+        return;
+    }
+
+    dprintf( 2, "[fex-arena] ml756 NO ARENA RESERVED -- falling back to FEX's own band "
+                "selection (unreliable). x64 guests may fail to start.\n" );
+}
+
 NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *size_ptr, ULONG type,
                                            ULONG protect, MEM_EXTENDED_PARAMETER *parameters,
                                            ULONG count )

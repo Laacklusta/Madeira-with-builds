@@ -2621,6 +2621,8 @@ static ULONG_PTR get_image_address(void)
 /***********************************************************************
  *           start_main_thread
  */
+extern void ios_reserve_fex_arena(void);  /* ml756, virtual_ios.c */
+
 static void start_main_thread(void)
 {
 #ifdef WINE_IOS
@@ -2719,6 +2721,17 @@ static void start_main_thread(void)
     WINE_IOS_LOG("init_thread_stack...");
     init_thread_stack( teb, 0, 0, 0 );
     NtCreateKeyedEvent( &keyed_event, GENERIC_READ | GENERIC_WRITE, NULL, 0 );
+    /* ml756: take FEX's host arena BEFORE any PE module is placed.
+     *
+     * This is the whole point of the placeholder: once guest DLLs start
+     * loading they will occupy whatever FEX later wants, and no amount of
+     * probing afterwards can reclaim it. Everything above -- server_init_process,
+     * virtual_map_user_shared_data, init_thread_stack -- is already done, so
+     * Wine's VM bookkeeping can record the view; load_ntdll() below is the
+     * first PE placement. */
+    WINE_IOS_LOG("ios_reserve_fex_arena...");
+    ios_reserve_fex_arena();
+
     WINE_IOS_LOG("load_ntdll...");
     load_ntdll();
     WINE_IOS_LOG("load_wow64_ntdll...");
