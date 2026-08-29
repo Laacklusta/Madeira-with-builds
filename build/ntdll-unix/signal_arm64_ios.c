@@ -10321,6 +10321,23 @@ static void abrt_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 {
     EXCEPTION_RECORD rec = { EXCEPTION_WINE_ASSERTION, EXCEPTION_NONCONTINUABLE };
 #ifdef WINE_IOS
+    /* ml784 (#85 again): SIGABRT is raised by HOST code too, and this handler
+     * adopted it unconditionally.
+     *
+     * A SwiftUI AttributeGraph precondition failure called abort() on the UI
+     * thread; abrt_handler treated it as a guest exception, and
+     * ios_log_guest_exception then faulted on a thread with no TEB -- so the
+     * crash report blamed our handler and the framework's own reason was never
+     * printed. Same rule the other handlers already follow: only adopt faults
+     * that belong to the emulated world.
+     *
+     * si_addr is meaningless for SIGABRT, so foreign-ness is judged on the PC
+     * alone; a guest abort still comes from the pool or a guest band. */
+    if (ios_fault_is_foreign( (void *)PC_sig( (ucontext_t *)sigcontext ), NULL ))
+    {
+        ios_decline_foreign_fault( signal, (void *)PC_sig( (ucontext_t *)sigcontext ), NULL );
+        return;
+    }
     ios_track_signal( signal, sigcontext );
 #endif
     setup_exception( sigcontext, &rec );
