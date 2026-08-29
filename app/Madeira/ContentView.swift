@@ -1998,6 +1998,20 @@ struct ContentView: View {
             winios_phase("pool-ready")
             logStore.log("BRK suspension lasted \(String(format: "%.2f", elapsed))s")
 
+            // ml760: shadow-pack mode. Documents/madeira-shadow.txt == "1" packs
+            // and validates every real render batch into the remote wire format,
+            // then discards it and renders locally as normal. Exercises the
+            // packer against live traffic where being wrong costs nothing. The
+            // check that matters is packed counts equalling census counts: a
+            // silently skipped command would otherwise surface as a subtly wrong
+            // frame on another machine.
+            if let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+               let txt = try? String(contentsOf: d.appendingPathComponent("madeira-shadow.txt"), encoding: .utf8) {
+                let v = txt.trimmingCharacters(in: .whitespacesAndNewlines)
+                setenv("DXMT_SHADOW_PACK", v, 1)
+                logStore.log("shadow pack: DXMT_SHADOW_PACK=\(v) via madeira-shadow.txt")
+            }
+
             // ml758: wmtcmd census. Documents/madeira-census.txt == "1" counts
             // which of the 59 render/compute/blit command types a workload
             // actually emits, and how large their sidecar data gets. Needed
