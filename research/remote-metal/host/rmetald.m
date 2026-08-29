@@ -1,0 +1,204 @@
+/* Remote Metal host daemon -- runs on macOS, owns the real MTLDevice.
+ *
+ * The guest never sees a host pointer. Every Objective-C object it can refer
+ * to lives in a generation-tagged table here, and the guest holds only an
+ * index. See protocol.h for why that matters.
+ */
+#import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <errno.h>
+#include "../protocol.h"
+
+/* ---- handle table ------------------------------------------------------ */
+
+typedef struct {
+    __unsafe_unretained id obj;   /* retained manually via CFBridgingRetain */
+    uint32_t generation;
+    int      in_use;
+} rm_slot;
+
+static rm_slot  *g_slots;
+static uint32_t  g_slot_count;
+static uint32_t  g_slot_cap;
+static uint32_t  g_live;
+
+static uint64_t rm_intern(id obj) {
+    if (!obj) return RM_NULL_HANDLE;
+    uint32_t slot = UINT32_MAX;
+    for (uint32_t i = 0; i < g_slot_count; i++)
+        if (!g_slots[i].in_use) { slot = i; break; }
+    if (slot == UINT32_MAX) {
+        if (g_slot_count == g_slot_cap) {
+            g_slot_cap = g_slot_cap ? g_slot_cap * 2 : 256;
+            g_slots = realloc(g_slots, g_slot_cap * sizeof(rm_slot));
+        }
+        slot = g_slot_count++;
+        g_slots[slot].generation = 1;
+    }
+    CFBridgingRetain(obj);              /* +1, balanced in rm_release_handle */
+    g_slots[slot].obj = obj;
+    g_slots[slot].in_use = 1;
+    g_live++;
+    return RM_HANDLE(g_slots[slot].generation, slot);
+}
+
+/* Returns nil and sets *err when the handle is stale or bogus. Callers must
+ * check: silently treating a stale handle as valid is exactly the corruption
+ * this table exists to prevent. */
+static id rm_resolve(uint64_t h, uint32_t *err) {
+    *err = RM_OK;
+    if (h == RM_NULL_HANDLE) return nil;
+    uint32_t slot = RM_HANDLE_SLOT(h), gen = RM_HANDLE_GEN(h);
+    if (slot >= g_slot_count || !g_slots[slot].in_use) { *err = RM_ERR_BAD_HANDLE; return nil; }
+    if (g_slots[slot].generation != gen)                { *err = RM_ERR_STALE_HANDLE; return nil; }
+    return g_slots[slot].obj;
+}
+
+static uint32_t rm_release_handle(uint64_t h) {
+    uint32_t err; id obj = rm_resolve(h, &err);
+    if (err != RM_OK) return err;
+    if (!obj) return RM_OK;
+    uint32_t slot = RM_HANDLE_SLOT(h);
+    CFRelease((__bridge CFTypeRef)g_slots[slot].obj);
+    g_slots[slot].obj = nil;
+    g_slots[slot].in_use = 0;
+    g_slots[slot].generation++;      /* invalidates every outstanding handle */
+    g_live--;
+    return RM_OK;
+}
+
+/* ---- framed IO --------------------------------------------------------- */
+
+static int rd(int fd, void *p, size_t n) {
+    uint8_t *b = p;
+    while (n) { ssize_t r = read(fd, b, n); if (r <= 0) return -1; b += r; n -= (size_t)r; }
+    return 0;
+}
+static int wr(int fd, const void *p, size_t n) {
+    const uint8_t *b = p;
+    while (n) { ssize_t r = write(fd, b, n); if (r <= 0) return -1; b += r; n -= (size_t)r; }
+    return 0;
+}
+
+static int reply(int fd, struct rm_hdr *req, uint32_t status, const void *payload, uint32_t len) {
+    struct rm_hdr h = { RM_MAGIC, RM_VERSION, req->opcode, req->seq, status, len, 0 };
+    if (wr(fd, &h, sizeof h)) return -1;
+    return len ? wr(fd, payload, len) : 0;
+}
+
+static void serve(int fd) {
+    uint8_t payload[65536];
+    for (;;) {
+        struct rm_hdr h;
+        if (rd(fd, &h, sizeof h)) return;
+        if (h.magic != RM_MAGIC)   { reply(fd, &h, RM_ERR_BAD_MAGIC, NULL, 0); return; }
+        if (h.version != RM_VERSION) { reply(fd, &h, RM_ERR_BAD_VERSION, NULL, 0); return; }
+        if (h.payload_len > sizeof payload) return;
+        if (h.payload_len && rd(fd, payload, h.payload_len)) return;
+
+        @autoreleasepool {
+        uint32_t err = RM_OK;
+        switch (h.opcode) {
+        case RM_OP_PING:
+            reply(fd, &h, RM_OK, NULL, 0); break;
+
+        case RM_OP_COPY_ALL_DEVICES: {
+            id dev = MTLCreateSystemDefaultDevice();
+            NSArray *arr = dev ? @[dev] : @[];
+            struct rm_ret_handle r = { rm_intern(arr) };
+            reply(fd, &h, RM_OK, &r, sizeof r); break;
+        }
+        case RM_OP_ARRAY_COUNT: {
+            if (h.payload_len < sizeof(struct rm_arg_handle)) { reply(fd,&h,RM_ERR_SHORT_PAYLOAD,NULL,0); break; }
+            id o = rm_resolve(((struct rm_arg_handle *)payload)->handle, &err);
+            if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
+            if (![o isKindOfClass:[NSArray class]]) { reply(fd,&h,RM_ERR_WRONG_CLASS,NULL,0); break; }
+            struct rm_ret_u64 r = { [(NSArray *)o count] };
+            reply(fd, &h, RM_OK, &r, sizeof r); break;
+        }
+        case RM_OP_ARRAY_OBJECT: {
+            struct rm_arg_handle_u64 *a = (void *)payload;
+            if (h.payload_len < sizeof *a) { reply(fd,&h,RM_ERR_SHORT_PAYLOAD,NULL,0); break; }
+            id o = rm_resolve(a->handle, &err);
+            if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
+            if (![o isKindOfClass:[NSArray class]]) { reply(fd,&h,RM_ERR_WRONG_CLASS,NULL,0); break; }
+            NSArray *arr = o;
+            if (a->arg >= arr.count) { reply(fd,&h,RM_ERR_BAD_HANDLE,NULL,0); break; }
+            struct rm_ret_handle r = { rm_intern(arr[(NSUInteger)a->arg]) };
+            reply(fd, &h, RM_OK, &r, sizeof r); break;
+        }
+        case RM_OP_DEVICE_NAME: {
+            id o = rm_resolve(((struct rm_arg_handle *)payload)->handle, &err);
+            if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
+            const char *n = [[(id<MTLDevice>)o name] UTF8String] ?: "";
+            reply(fd, &h, RM_OK, n, (uint32_t)strlen(n)); break;
+        }
+        case RM_OP_SUPPORTS_FAMILY: {
+            struct rm_arg_handle_u64 *a = (void *)payload;
+            id o = rm_resolve(a->handle, &err);
+            if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
+            struct rm_ret_u64 r = { [(id<MTLDevice>)o supportsFamily:(MTLGPUFamily)a->arg] ? 1 : 0 };
+            reply(fd, &h, RM_OK, &r, sizeof r); break;
+        }
+        case RM_OP_SUPPORTS_BC: {
+            id o = rm_resolve(((struct rm_arg_handle *)payload)->handle, &err);
+            if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
+            struct rm_ret_u64 r = { [(id<MTLDevice>)o supportsBCTextureCompression] ? 1 : 0 };
+            reply(fd, &h, RM_OK, &r, sizeof r); break;
+        }
+        case RM_OP_ALLOCATED_SIZE: {
+            id o = rm_resolve(((struct rm_arg_handle *)payload)->handle, &err);
+            if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
+            struct rm_ret_u64 r = { [(id<MTLDevice>)o currentAllocatedSize] };
+            reply(fd, &h, RM_OK, &r, sizeof r); break;
+        }
+        case RM_OP_RETAIN: {
+            id o = rm_resolve(((struct rm_arg_handle *)payload)->handle, &err);
+            if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
+            struct rm_ret_handle r = { rm_intern(o) };   /* new handle, own refcount */
+            reply(fd, &h, RM_OK, &r, sizeof r); break;
+        }
+        case RM_OP_RELEASE:
+            reply(fd, &h, rm_release_handle(((struct rm_arg_handle *)payload)->handle), NULL, 0); break;
+
+        case RM_OP_STATS: {
+            struct rm_ret_u64 r = { g_live };
+            reply(fd, &h, RM_OK, &r, sizeof r); break;
+        }
+        default:
+            reply(fd, &h, RM_ERR_BAD_OPCODE, NULL, 0); break;
+        }
+        }
+    }
+}
+
+int main(void) {
+    @autoreleasepool {
+        id<MTLDevice> d = MTLCreateSystemDefaultDevice();
+        if (!d) { fprintf(stderr, "no Metal device\n"); return 1; }
+        fprintf(stderr, "[rmetald] host GPU: %s\n", [[d name] UTF8String]);
+        fprintf(stderr, "[rmetald] Apple7=%d Apple8=%d Apple9=%d BC=%d\n",
+                [d supportsFamily:MTLGPUFamilyApple7], [d supportsFamily:MTLGPUFamilyApple8],
+                [d supportsFamily:MTLGPUFamilyApple9], [d supportsBCTextureCompression]);
+    }
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    int one = 1; setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    struct sockaddr_in a = { .sin_family = AF_INET, .sin_port = htons(RM_PORT),
+                             .sin_addr.s_addr = INADDR_ANY };
+    if (bind(s, (struct sockaddr *)&a, sizeof a) || listen(s, 4)) { perror("bind/listen"); return 1; }
+    fprintf(stderr, "[rmetald] listening on :%d\n", RM_PORT);
+    for (;;) {
+        int c = accept(s, NULL, NULL);
+        if (c < 0) continue;
+        setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+        fprintf(stderr, "[rmetald] client connected\n");
+        serve(c);
+        close(c);
+        fprintf(stderr, "[rmetald] client gone; live handles=%u\n", g_live);
+    }
+}

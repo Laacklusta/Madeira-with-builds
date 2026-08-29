@@ -96,8 +96,12 @@ build/gnutls-ios/src/*
 
 build/gnutls-ios/obj/
 
-# Reference/scratch material — not build inputs
-research/
+# Reference/scratch material — not build inputs.
+# research/* rather than research/, so specific subdirectories can be
+# re-included; git will not descend into a directory ignored with a trailing
+# slash, which makes any negation inside it silently ineffective.
+research/*
+!research/remote-metal/
 *.bak
 photorec.se2
 .DS_Store
@@ -113,3 +117,5 @@ build/x64-tests/asmconf_obj/
 # redistributable terms and only unmodified. Not ours to ship -- obtain them
 # yourself, see tools/fetch-vcruntime.md.
 app/Madeira/x86_64-vcruntime/*.dll
+research/remote-metal/host/rmetald
+research/remote-metal/guest/rmtest
