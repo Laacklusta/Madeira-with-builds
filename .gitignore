@@ -119,3 +119,10 @@ build/x64-tests/asmconf_obj/
 app/Madeira/x86_64-vcruntime/*.dll
 research/remote-metal/host/rmetald
 research/remote-metal/guest/rmtest
+
+# remote-metal test binaries (built by run-tests.sh)
+research/remote-metal/guest/rmtest
+research/remote-metal/guest/rmreplay
+research/remote-metal/guest/rmres
+research/remote-metal/guest/rmclient_test
+research/remote-metal/host/rmetald

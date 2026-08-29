@@ -170,7 +170,9 @@ int main(int argc, char **argv) {
     dev = rh.handle;
 
     struct rm_arg_handle adev = { dev };
-    call(RM_OP_NEW_COMMAND_QUEUE, &adev, sizeof adev, &rh, sizeof rh, NULL);
+    /* v3: the queue call carries maxCommandBufferCount. */
+    struct rm_arg_handle_u64 qarg = { dev, 64 };
+    call(RM_OP_NEW_COMMAND_QUEUE, &qarg, sizeof qarg, &rh, sizeof rh, NULL);
     uint64_t queue = rh.handle;
 
     /* vertex buffer: one triangle in clip space */
