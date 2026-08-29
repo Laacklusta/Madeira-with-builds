@@ -99,7 +99,7 @@ separately, and are above.
 ```
 presented      2000/2000 frames
 no-drawable    0        (answered with a status, never hung)
-frame submit   mean 0.91 ms   worst 15.68 ms   -> ~1100 FPS ceiling
+frame submit   mean 0.91 ms   worst 15.68 ms
 live handles   11       (unchanged from setup: no per-frame leak)
 drawable reuse BAD_HANDLE (consumed by submit, as intended)
 ```

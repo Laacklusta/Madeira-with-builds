@@ -381,12 +381,30 @@ static void serve(int fd) {
                 off += rec->size;
             }
             [enc endEncoding];
-            if (bad) { reply(fd, &h, err ? err : RM_ERR_BAD_OPCODE, NULL, 0); break; }
+            if (bad) {
+                /* A malformed command stream must not strand the drawable: it
+                 * is single-use, and leaking one per failed frame exhausts the
+                 * pool and then blocks acquisition forever. */
+                if (a->present_drawable) {
+                    rm_release_handle(a->color_texture);
+                    rm_release_handle(a->present_drawable);
+                }
+                reply(fd, &h, err ? err : RM_ERR_BAD_OPCODE, NULL, 0); break;
+            }
             /* Present on THIS command buffer, before commit -- Metal's
              * intended sequencing. Presenting from a separate call after this
              * buffer had committed would race the display. */
             if (a->present_drawable) {
                 id d = rm_resolve(a->present_drawable, &err);
+                /* The pass must render into THIS drawable's texture. Presenting
+                 * a drawable whose texture was never drawn shows a stale or
+                 * blank frame, which looks like a renderer bug rather than a
+                 * protocol misuse. */
+                if (err == RM_OK && d && tex != [(id<CAMetalDrawable>)d texture]) {
+                    fprintf(stderr, "[rmetald] color_texture is not the drawable's texture\n");
+                    rm_release_handle(a->present_drawable);   /* do not strand it */
+                    reply(fd, &h, RM_ERR_WRONG_CLASS, NULL, 0); break;
+                }
                 if (err != RM_OK) {
                     fprintf(stderr, "[rmetald] present_drawable=%llu invalid (%u) -- "
                             "an uninitialised field in the caller's render pass?\n",
@@ -403,15 +421,13 @@ static void serve(int fd) {
              * frame run made obvious (611 live handles). The texture belongs
              * to the drawable, so its handle dies with it. */
             if (a->present_drawable) {
-                id dd = rm_resolve(a->present_drawable, &err2);
-                if (!err2 && dd) {
-                    id dtex = [(id<CAMetalDrawable>)dd texture];
-                    for (uint32_t i = 0; i < g_slot_count; i++)
-                        if (g_slots[i].in_use && g_slots[i].obj == dtex) {
-                            rm_release_handle(RM_HANDLE(g_slots[i].generation, i));
-                            break;
-                        }
-                }
+                /* Consume exactly the two handles this frame acquired. The
+                 * earlier version scanned the whole table for the texture
+                 * object, which is O(handles) per frame and would match the
+                 * wrong slot if the same texture were interned twice. The
+                 * caller already told us which texture it rendered into, and
+                 * it was validated against the drawable above. */
+                rm_release_handle(a->color_texture);
                 rm_release_handle(a->present_drawable);
             }
             struct rm_ret_u64 r = { (uint64_t)[cb status] };
@@ -424,11 +440,13 @@ static void serve(int fd) {
             reply(fd, &h, RM_OK, &r, sizeof r); break;
         }
         case RM_OP_NEXT_DRAWABLE: {
-            __block id<CAMetalDrawable> d = nil;
             __block CGSize sz = CGSizeZero;
+            /* Only the window/layer MUTATION belongs on main. nextDrawable can
+             * block -- on the drawable pool, or indefinitely while the window
+             * is minimised -- and blocking the main queue there would freeze
+             * AppKit event processing, so the user could not even restore the
+             * window that is causing the block. Acquire on this thread. */
             dispatch_sync(dispatch_get_main_queue(), ^{
-                /* keep the layer sized to the window; a resize otherwise
-                 * presents into a stale drawable size */
                 NSView *v = [g_window contentView];
                 g_layer.frame = v.bounds;
                 CGFloat s = g_window.backingScaleFactor ?: 1.0;
@@ -436,8 +454,8 @@ static void serve(int fd) {
                 if (!CGSizeEqualToSize(want, g_layer.drawableSize) && want.width > 0)
                     g_layer.drawableSize = want;
                 sz = g_layer.drawableSize;
-                d = [g_layer nextDrawable];
             });
+            id<CAMetalDrawable> d = [g_layer nextDrawable];
             if (!d) { reply(fd, &h, RM_ERR_NO_DRAWABLE, NULL, 0); break; }
             struct rm_ret_drawable r = { rm_intern(d), rm_intern(d.texture),
                                          (uint64_t)sz.width, (uint64_t)sz.height };

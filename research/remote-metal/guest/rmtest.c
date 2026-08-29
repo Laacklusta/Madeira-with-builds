@@ -86,6 +86,13 @@ int main(int argc, char **argv) {
     inet_pton(AF_INET, host, &a.sin_addr);
     if (connect(g_fd, (struct sockaddr *)&a, sizeof a)) { perror("connect"); return 1; }
     int one = 1; setsockopt(g_fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+    /* The host had these; the guest did not. A broken connection would kill
+     * this process with SIGPIPE instead of returning an error, and a wedged
+     * host would block it forever with no diagnosis. */
+    setsockopt(g_fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+    struct timeval tv = { .tv_sec = 30 };
+    setsockopt(g_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    setsockopt(g_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
     const char *tok = getenv("RMETAL_TOKEN");
     if (!tok) { fprintf(stderr, "set RMETAL_TOKEN\n"); return 1; }
     if (call(RM_OP_PING, tok, (uint32_t)strlen(tok), NULL, 0, NULL) != RM_OK) {
