@@ -29,6 +29,7 @@ enum wmtw_op {
     WMTW_OP_UseResource                  = 1,
     WMTW_OP_SetVertexBuffer              = 2,
     WMTW_OP_SetVertexBufferOffset        = 3,
+    WMTW_OP_SetFragmentBufferOffset      = 21,
     WMTW_OP_SetFragmentBuffer            = 4,
     WMTW_OP_SetFragmentTexture           = 10,
     WMTW_OP_SetFragmentBytes             = 11,
@@ -94,6 +95,13 @@ struct wmtw_setvertexbufferoffset {
     uint64_t  index;
 };
 WMTW_ASSERT(sizeof(struct wmtw_setvertexbufferoffset) == 24, "wmtw_setvertexbufferoffset layout changed on one side only");
+
+struct wmtw_setfragmentbufferoffset {
+    struct wmtw_hdr h;
+    uint64_t  offset;
+    uint64_t  index;
+};
+WMTW_ASSERT(sizeof(struct wmtw_setfragmentbufferoffset) == 24, "wmtw_setfragmentbufferoffset layout changed on one side only");
 
 struct wmtw_setfragmentbuffer {
     struct wmtw_hdr h;

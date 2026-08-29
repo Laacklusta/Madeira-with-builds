@@ -33,7 +33,7 @@
  *    the same handle. An older client that sent the 8-byte queue payload
  *    got an error it ignored and then used a device as a queue, which
  *    terminated the host. Refuse the version rather than misread it. */
-#define RM_VERSION 10u
+#define RM_VERSION 12u
 #define RM_PORT    47821
 
 enum rm_op {
@@ -175,7 +175,20 @@ enum rm_op {
      * -- the black padding on the right and bottom. */
     RM_OP_LAYER_SET_PROPS,       /* layer, WMTLayerProps -> status               */
     RM_OP_LAYER_GET_PROPS,       /* layer -> WMTLayerProps                       */
+
+    /* Device queries a real title needs. minimumLinearTextureAlignment in
+     * particular must NOT be answered with zero: the caller divides by it, and
+     * a zero alignment produced a zero-sized allocation and a memcpy into a
+     * null destination. */
+    RM_OP_MIN_LINEAR_ALIGN,      /* device, pixel format -> u64 alignment        */
+    RM_OP_SUPPORTS_SAMPLE_COUNT, /* device, count -> u64 (bool)                  */
+    RM_OP_BLIT_ENCODER,          /* cmdbuf -> blit encoder handle                */
+    RM_OP_BLIT_INTO,             /* encoder + packed blit batch -> replayed      */
+    RM_OP_SET_LABEL,             /* encoder, [utf8 label] -> status              */
+    RM_OP_BUFFER_NEW_TEXTURE,    /* buffer, WMTTextureInfo, offset, bpr -> handle */
 };
+
+struct rm_buf_texture { uint64_t buffer; uint64_t offset; uint64_t bytes_per_row; };
 
 struct rm_tex_replace {
     uint64_t texture;

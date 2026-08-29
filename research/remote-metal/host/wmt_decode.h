@@ -55,6 +55,7 @@ static inline uint32_t wmtw_min_size(uint16_t op) {
     case WMTW_OP_UseResource:                return sizeof(struct wmtw_useresource);
     case WMTW_OP_SetVertexBuffer:            return sizeof(struct wmtw_setvertexbuffer);
     case WMTW_OP_SetVertexBufferOffset:      return sizeof(struct wmtw_setvertexbufferoffset);
+    case WMTW_OP_SetFragmentBufferOffset:    return sizeof(struct wmtw_setfragmentbufferoffset);
     case WMTW_OP_SetFragmentBuffer:          return sizeof(struct wmtw_setfragmentbuffer);
     case WMTW_OP_SetFragmentTexture:         return sizeof(struct wmtw_setfragmenttexture);
     case WMTW_OP_SetFragmentBytes:           return sizeof(struct wmtw_setfragmentbytes);

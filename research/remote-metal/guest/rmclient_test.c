@@ -14,6 +14,9 @@ typedef int NTSTATUS;
 
 #include "../../dxmt/src/winemetal/unix/wmt_remote_client.h"
 
+/* Drive a flush from the test; the client owns the registry. */
+static void wmtr_flush_buffers_for_test(uint64_t only) { (void)only; wmtr_flush_buffers(); }
+
 static int fails;
 #define CHECK(c, ...) do { if (!(c)) { printf("  FAIL: "); printf(__VA_ARGS__); \
     printf("\n"); fails++; } else { printf("  ok: "); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -223,6 +226,41 @@ int main(void) {
         for (uint32_t k = 0; k < got3; k++) if (back2[k]) nonzero++;
         CHECK(nonzero > 0, "readback is not all zeros (%u non-zero bytes)", nonzero);
         free(back2); free(caller_mem);
+    }
+
+    /* Changed-page upload must still deliver every byte. A checksum that
+     * misses a change shows up as a stale frame, not an error, so mutate one
+     * byte deep inside a large buffer and prove the host sees it. */
+    {
+        uint64_t blen = 512 * 1024;
+        uint8_t *mem = calloc(1, blen);
+        uint8_t bb3[sizeof(struct rm_wmt_info) + 32] = {0};
+        struct rm_wmt_info *w3 = (void *)bb3;
+        w3->owner = dev.handle; w3->info_len = 32; w3->extra_count = 0;
+        struct { uint64_t length; uint32_t options; uint32_t pad; void *memory; uint64_t gpu; } bi3;
+        memset(&bi3, 0, sizeof bi3); bi3.length = blen; bi3.memory = mem;
+        memcpy(bb3 + sizeof *w3, &bi3, 32);
+        struct rm_ret_handle_u64 h3 = {0};
+        st = wmtr_call(RM_OP_NEW_BUFFER_INFO, bb3, sizeof bb3, &h3, sizeof h3, 0);
+        CHECK(st == RM_OK && h3.handle, "512K buffer for page-diff test");
+        /* The registry is normally populated by the winemetal handler; this
+         * test creates the buffer with a raw RPC, so register it here or the
+         * flush has nothing to walk. */
+        wmtr_buf_add(h3.handle, mem, blen, 0, 1, 0);
+
+        for (uint64_t k = 0; k < blen; k++) mem[k] = (uint8_t)(k >> 8);
+        wmtr_flush_buffers_for_test(h3.handle);
+
+        /* One byte, in the middle of one page. */
+        mem[300000] = 0xAB;
+        wmtr_flush_buffers_for_test(h3.handle);
+
+        uint8_t chk[4] = {0}; uint32_t g4 = 0;
+        struct rm_buffer_range rr4 = { h3.handle, 300000, 4 };
+        st = wmtr_call(RM_OP_BUFFER_READ, &rr4, sizeof rr4, chk, sizeof chk, &g4);
+        CHECK(st == RM_OK && chk[0] == 0xAB,
+              "a single changed byte deep in a large buffer reaches the host (got 0x%02x)", chk[0]);
+        free(mem);
     }
 
     struct rm_arg_handle ra = { dev.handle };

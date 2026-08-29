@@ -206,13 +206,18 @@ static void host_window_build(id<MTLDevice> dev) {
         g_layer.framebufferOnly = NO;          /* readback allowed for verification */
         /* Bounded acquisition: a drawable that never arrives must become an
          * ANSWER, not a hung RPC thread. */
-        /* Block instead of returning nil. With a timeout, contention makes
-         * nextDrawable hand back nothing; the guest then renders nowhere and
-         * presents an undrawn drawable, which is a BLACK FRAME a few times a
-         * second. The frame loop here is synchronous and acquisition already
-         * runs off the main queue, so waiting is safe -- and a stall shows up
-         * in the counter below rather than as a mystery flicker. */
-        g_layer.allowsNextDrawableTimeout = NO;
+        /* Time out rather than block.
+         *
+         * Blocking here DEADLOCKS the whole guest: this daemon serves a client
+         * on one thread, and the client serialises its calls behind one mutex,
+         * so an acquire that never returns wedges every winemetal call in that
+         * process -- observed as a clean hang with all threads parked and no
+         * error anywhere. A timeout costs at worst one blank frame, which is
+         * counted below.
+         *
+         * The flicker this was changed for had a different cause entirely: a
+         * per-frame display query returning uninitialised memory. */
+        g_layer.allowsNextDrawableTimeout = YES;
         NSView *v = [g_window contentView];
         [v setWantsLayer:YES];
         [v setLayer:g_layer];
@@ -307,6 +312,11 @@ static int rm_replay_into(id<MTLRenderCommandEncoder> enc, struct wmtw_view v) {
                 case WMTW_OP_SetVertexBufferOffset: {
                     const struct wmtw_setvertexbufferoffset *c = (const void *)r;
                     [enc setVertexBufferOffset:(NSUInteger)c->offset atIndex:(NSUInteger)c->index];
+                    break;
+                }
+                case WMTW_OP_SetFragmentBufferOffset: {
+                    const struct wmtw_setfragmentbufferoffset *c = (const void *)r;
+                    [enc setFragmentBufferOffset:(NSUInteger)c->offset atIndex:(NSUInteger)c->index];
                     break;
                 }
                 case WMTW_OP_SetFragmentBuffer: {
@@ -993,6 +1003,11 @@ static void serve(int fd) {
                     [enc setVertexBufferOffset:(NSUInteger)c->offset atIndex:(NSUInteger)c->index];
                     break;
                 }
+                case WMTW_OP_SetFragmentBufferOffset: {
+                    const struct wmtw_setfragmentbufferoffset *c = (const void *)r;
+                    [enc setFragmentBufferOffset:(NSUInteger)c->offset atIndex:(NSUInteger)c->index];
+                    break;
+                }
                 case WMTW_OP_SetFragmentBuffer: {
                     const struct wmtw_setfragmentbuffer *c = (const void *)r;
                     id o = rm_resolve(c->buffer, &err); if (err != RM_OK) { bad = 1; break; }
@@ -1376,6 +1391,177 @@ static void serve(int fd) {
                 r.pixel_format     = (enum WMTPixelFormat)g_layer.pixelFormat;
             });
             reply(fd, &h, RM_OK, &r, sizeof r); break;
+        }
+        case RM_OP_MIN_LINEAR_ALIGN: {
+            struct rm_arg_handle_u64 *a = (void *)payload;
+            if (h.payload_len < sizeof *a) { reply(fd,&h,RM_ERR_SHORT_PAYLOAD,NULL,0); break; }
+            id o = rm_resolve(a->handle, &err);
+            if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
+            NSUInteger al = [(id<MTLDevice>)o minimumLinearTextureAlignmentForPixelFormat:
+                             rm_fmt((enum WMTPixelFormat)a->arg)];
+            /* Never hand back zero: the caller divides by this. */
+            struct rm_ret_u64 r = { al ? al : 256 };
+            reply(fd, &h, RM_OK, &r, sizeof r); break;
+        }
+        case RM_OP_SUPPORTS_SAMPLE_COUNT: {
+            struct rm_arg_handle_u64 *a = (void *)payload;
+            if (h.payload_len < sizeof *a) { reply(fd,&h,RM_ERR_SHORT_PAYLOAD,NULL,0); break; }
+            id o = rm_resolve(a->handle, &err);
+            if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
+            struct rm_ret_u64 r = { [(id<MTLDevice>)o supportsTextureSampleCount:a->arg] ? 1 : 0 };
+            reply(fd, &h, RM_OK, &r, sizeof r); break;
+        }
+        case RM_OP_BLIT_ENCODER: {
+            id cb = rm_resolve(((struct rm_arg_handle *)payload)->handle, &err);
+            if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
+            id<MTLBlitCommandEncoder> e2 = [(id<MTLCommandBuffer>)cb blitCommandEncoder];
+            struct rm_ret_handle r = { rm_intern(e2) };
+            reply(fd, &h, e2 ? RM_OK : RM_ERR_WRONG_CLASS, &r, sizeof r); break;
+        }
+        case RM_OP_SET_LABEL: {
+            struct rm_arg_handle *a = (void *)payload;
+            if (h.payload_len < sizeof *a) { reply(fd,&h,RM_ERR_SHORT_PAYLOAD,NULL,0); break; }
+            id o = rm_resolve(a->handle, &err);
+            if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
+            NSString *l = [[NSString alloc] initWithBytes:(const uint8_t *)payload + sizeof *a
+                           length:h.payload_len - sizeof *a encoding:NSUTF8StringEncoding];
+            [(id<MTLCommandEncoder>)o setLabel:l];
+            reply(fd, &h, RM_OK, NULL, 0); break;
+        }
+        case RM_OP_BLIT_INTO: {
+            /* Blit commands are handles and scalars only -- no inline pointers
+             * -- so each command's struct travels verbatim and is translated
+             * here, the same discipline the descriptors use. Records are
+             * {type, size, bytes}; the guest's `next` pointer is not sent. */
+            struct rm_arg_handle *a = (void *)payload;
+            if (h.payload_len < sizeof *a) { reply(fd,&h,RM_ERR_SHORT_PAYLOAD,NULL,0); break; }
+            id eo = rm_resolve(a->handle, &err);
+            if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
+            id<MTLBlitCommandEncoder> enc = eo;
+            const uint8_t *p = (const uint8_t *)payload + sizeof *a;
+            const uint8_t *end = (const uint8_t *)payload + h.payload_len;
+            uint64_t done = 0, skipped = 0;
+            while ((size_t)(end - p) >= 8) {
+                uint32_t type = *(const uint32_t *)p, sz = *(const uint32_t *)(p + 4);
+                const uint8_t *rec = p + 8;
+                if (sz > (size_t)(end - rec)) break;
+                p = rec + sz;
+                uint32_t e2 = RM_OK;
+                #define RES(h_) rm_resolve((uint64_t)(h_), &e2)
+                switch (type) {
+                case WMTBlitCommandNop: break;
+                case WMTBlitCommandCopyFromBufferToBuffer: {
+                    const struct wmtcmd_blit_copy_from_buffer_to_buffer *c = (const void *)rec;
+                    id sb = RES(c->src), db = RES(c->dst);
+                    if (e2 != RM_OK || !sb || !db) { skipped++; break; }
+                    [enc copyFromBuffer:sb sourceOffset:c->src_offset toBuffer:db
+              destinationOffset:c->dst_offset size:c->copy_length];
+                    done++; break;
+                }
+                case WMTBlitCommandCopyFromBufferToTexture: {
+                    const struct wmtcmd_blit_copy_from_buffer_to_texture *c = (const void *)rec;
+                    id sb = RES(c->src), dt = RES(c->dst);
+                    if (e2 != RM_OK || !sb || !dt) { skipped++; break; }
+                    [enc copyFromBuffer:sb sourceOffset:c->src_offset
+                      sourceBytesPerRow:c->bytes_per_row sourceBytesPerImage:c->bytes_per_image
+                             sourceSize:MTLSizeMake(c->size.width, c->size.height, c->size.depth)
+                              toTexture:dt destinationSlice:c->slice destinationLevel:c->level
+                     destinationOrigin:MTLOriginMake(c->origin.x, c->origin.y, c->origin.z)];
+                    done++; break;
+                }
+                case WMTBlitCommandCopyFromTextureToBuffer: {
+                    const struct wmtcmd_blit_copy_from_texture_to_buffer *c = (const void *)rec;
+                    id st2 = RES(c->src), db = RES(c->dst);
+                    if (e2 != RM_OK || !st2 || !db) { skipped++; break; }
+                    [enc copyFromTexture:st2 sourceSlice:c->slice sourceLevel:c->level
+                            sourceOrigin:MTLOriginMake(c->origin.x, c->origin.y, c->origin.z)
+                              sourceSize:MTLSizeMake(c->size.width, c->size.height, c->size.depth)
+                                toBuffer:db destinationOffset:c->offset
+                   destinationBytesPerRow:c->bytes_per_row
+                 destinationBytesPerImage:c->bytes_per_image];
+                    done++; break;
+                }
+                case WMTBlitCommandCopyFromTextureToTexture: {
+                    const struct wmtcmd_blit_copy_from_texture_to_texture *c = (const void *)rec;
+                    id st2 = RES(c->src), dt = RES(c->dst);
+                    if (e2 != RM_OK || !st2 || !dt) { skipped++; break; }
+                    [enc copyFromTexture:st2 sourceSlice:c->src_slice sourceLevel:c->src_level
+                            sourceOrigin:MTLOriginMake(c->src_origin.x, c->src_origin.y, c->src_origin.z)
+                              sourceSize:MTLSizeMake(c->src_size.width, c->src_size.height, c->src_size.depth)
+                               toTexture:dt destinationSlice:c->dst_slice
+                        destinationLevel:c->dst_level
+                       destinationOrigin:MTLOriginMake(c->dst_origin.x, c->dst_origin.y, c->dst_origin.z)];
+                    done++; break;
+                }
+                case WMTBlitCommandGenerateMipmaps: {
+                    const struct wmtcmd_blit_generate_mipmaps *c = (const void *)rec;
+                    id t = RES(c->texture);
+                    if (e2 != RM_OK || !t) { skipped++; break; }
+                    [enc generateMipmapsForTexture:t]; done++; break;
+                }
+                case WMTBlitCommandFillBuffer: {
+                    const struct wmtcmd_blit_fillbuffer *c = (const void *)rec;
+                    id b = RES(c->buffer);
+                    if (e2 != RM_OK || !b) { skipped++; break; }
+                    [enc fillBuffer:b range:NSMakeRange(c->offset, c->length) value:c->value];
+                    done++; break;
+                }
+                case WMTBlitCommandWaitForFence:
+                case WMTBlitCommandUpdateFence: {
+                    const struct wmtcmd_blit_fence_op *c = (const void *)rec;
+                    id f = c->fence ? RES(c->fence) : nil;
+                    if (e2 != RM_OK || !f) { skipped++; break; }
+                    if (type == WMTBlitCommandUpdateFence) [enc updateFence:f];
+                    else                                   [enc waitForFence:f];
+                    done++; break;
+                }
+                default: {
+                    static unsigned told;
+                    if (told++ < 8)
+                        fprintf(stderr, "[rmetald] blit: unknown command type %u -- skipped\n", type);
+                    skipped++; break;
+                }
+                }
+                #undef RES
+            }
+            if (skipped) {
+                static unsigned told;
+                if (told++ < 8)
+                    fprintf(stderr, "[rmetald] blit batch: %llu replayed, %llu SKIPPED "
+                                    "(a skipped copy leaves its destination stale)\n",
+                            (unsigned long long)done, (unsigned long long)skipped);
+            }
+            struct rm_ret_u64 r = { done };
+            reply(fd, &h, RM_OK, &r, sizeof r); break;
+        }
+        case RM_OP_BUFFER_NEW_TEXTURE: {
+            /* A texture VIEWING a buffer's memory. Streaming creates these, so
+             * an unrouted one stalls loading rather than failing visibly. */
+            struct rm_buf_texture *a = (void *)payload;
+            if (h.payload_len < sizeof *a + sizeof(struct WMTTextureInfo)) {
+                reply(fd,&h,RM_ERR_SHORT_PAYLOAD,NULL,0); break; }
+            id b = rm_resolve(a->buffer, &err);
+            if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
+            const struct WMTTextureInfo *i = (void *)(a + 1);
+            MTLTextureDescriptor *d = [[MTLTextureDescriptor alloc] init];
+            d.pixelFormat      = rm_fmt(i->pixel_format);
+            d.width            = i->width  ? i->width  : 1;
+            d.height           = i->height ? i->height : 1;
+            d.depth            = i->depth  ? i->depth  : 1;
+            d.arrayLength      = i->array_length ? i->array_length : 1;
+            d.textureType      = (MTLTextureType)i->type;
+            d.mipmapLevelCount = i->mipmap_level_count ? i->mipmap_level_count : 1;
+            d.sampleCount      = i->sample_count ? i->sample_count : 1;
+            d.usage            = (MTLTextureUsage)i->usage;
+            d.resourceOptions  = (MTLResourceOptions)i->options;
+            id<MTLTexture> t = [(id<MTLBuffer>)b newTextureWithDescriptor:d
+                                                                  offset:a->offset
+                                                             bytesPerRow:a->bytes_per_row];
+            if (!t) fprintf(stderr, "[rmetald] buffer-backed texture %ux%u fmt %u bpr %llu FAILED\n",
+                            i->width, i->height, (unsigned)i->pixel_format,
+                            (unsigned long long)a->bytes_per_row);
+            struct rm_ret_handle_u64 r = { rm_intern(t), t ? t.gpuResourceID._impl : 0 };
+            reply(fd, &h, t ? RM_OK : RM_ERR_WRONG_CLASS, &r, sizeof r); break;
         }
         case RM_OP_TEXTURE_DIMS: {
             id o = rm_resolve(((struct rm_arg_handle *)payload)->handle, &err);
