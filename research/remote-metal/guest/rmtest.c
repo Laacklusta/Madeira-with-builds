@@ -42,10 +42,20 @@ static uint32_t call(uint16_t op, const void *arg, uint32_t arglen,
         fprintf(stderr, "  PROTOCOL DESYNC: magic=%08x seq=%u expected %u\n", r.magic, r.seq, h.seq);
         return 0xffffffff;
     }
-    uint8_t scratch[65536];
+    /* Read the response DIRECTLY into the caller's buffer, draining any excess.
+     * The previous version read payload_len into a fixed 64KB stack buffer,
+     * which a larger texture readback would have overflowed -- a stack smash
+     * driven by a length field from the wire. Never size a stack buffer from
+     * a peer-supplied length. */
     uint32_t n = r.payload_len;
-    if (n) { if (rd(g_fd, scratch, n)) return 0xffffffff; }
-    if (out && n) { uint32_t c = n < outcap ? n : outcap; memcpy(out, scratch, c); }
+    uint32_t take = (out && n) ? (n < outcap ? n : outcap) : 0;
+    if (take && rd(g_fd, out, take)) return 0xffffffff;
+    for (uint32_t left = n - take; left; ) {          /* drain the remainder */
+        uint8_t sink[4096];
+        uint32_t c = left < sizeof sink ? left : (uint32_t)sizeof sink;
+        if (rd(g_fd, sink, c)) return 0xffffffff;
+        left -= c;
+    }
     if (outlen) *outlen = n;
     return r.status;
 }
@@ -72,7 +82,12 @@ int main(int argc, char **argv) {
     inet_pton(AF_INET, host, &a.sin_addr);
     if (connect(g_fd, (struct sockaddr *)&a, sizeof a)) { perror("connect"); return 1; }
     int one = 1; setsockopt(g_fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
-    printf("[rmtest] connected to %s:%d\n\n", host, RM_PORT);
+    const char *tok = getenv("RMETAL_TOKEN");
+    if (!tok) { fprintf(stderr, "set RMETAL_TOKEN\n"); return 1; }
+    if (call(RM_OP_PING, tok, (uint32_t)strlen(tok), NULL, 0, NULL) != RM_OK) {
+        fprintf(stderr, "authentication rejected\n"); return 1;
+    }
+    printf("[rmtest] connected+authenticated to %s:%d\n\n", host, RM_PORT);
 
     /* --- device enumeration through the handle table --- */
     struct rm_ret_handle rh; uint32_t st;
@@ -238,6 +253,75 @@ int main(int argc, char **argv) {
     printf("    non-black pixels  -> %u / %u (%.1f%%)\n", lit, got/4, 100.0*lit/(got/4.0));
     printf("    %s\n", (lit > 400 && lit < 2600)
         ? "TRIANGLE RENDERED ON THE HOST GPU" : "*** unexpected coverage ***");
+
+    /* ================= scale: bulk transfer ================= */
+    printf("\n  [bulk transfer]\n");
+    for (int mb = 1; mb <= 64; mb *= 4) {
+        size_t bytes = (size_t)mb << 20;
+        uint8_t *big = malloc(sizeof(struct rm_new_buffer) + bytes);
+        struct rm_new_buffer *bb = (void *)big;
+        bb->device = dev; bb->length = bytes;
+        memset(big + sizeof *bb, 0xa5, bytes);
+        double u0 = now_ms();
+        st = call(RM_OP_NEW_BUFFER, big, (uint32_t)(sizeof *bb + bytes), &rh, sizeof rh, NULL);
+        double up = now_ms() - u0;
+        printf("    upload  %3d MB  %7.1f ms  %6.1f MB/s   %s\n",
+               mb, up, mb / (up / 1000.0), statname(st));
+        struct rm_arg_handle rl = { rh.handle };
+        call(RM_OP_RELEASE, &rl, sizeof rl, NULL, 0, NULL);
+        free(big);
+    }
+    /* download via texture readback: 512x512 and 1024x1024 BGRA8 */
+    for (int dim = 512; dim <= 1024; dim *= 2) {
+        struct rm_new_texture bt = { dev, 80, (uint64_t)dim, (uint64_t)dim };
+        call(RM_OP_NEW_TEXTURE, &bt, sizeof bt, &rh, sizeof rh, NULL);
+        size_t bytes = (size_t)dim * dim * 4;
+        uint8_t *dst = malloc(bytes);
+        struct rm_arg_handle gt = { rh.handle };
+        double d0 = now_ms();
+        st = call(RM_OP_TEXTURE_GETBYTES, &gt, sizeof gt, dst, (uint32_t)bytes, &got);
+        double dn = now_ms() - d0;
+        printf("    download %dx%d (%.1f MB) %7.1f ms  %6.1f MB/s  %s\n",
+               dim, dim, bytes / 1048576.0, dn, (bytes / 1048576.0) / (dn / 1000.0), statname(st));
+        struct rm_arg_handle rl2 = { rh.handle };
+        call(RM_OP_RELEASE, &rl2, sizeof rl2, NULL, 0, NULL);
+        free(dst);
+    }
+
+    /* ================= scale: commands per pass ================= */
+    printf("\n  [render pass vs command count, 30 passes each]\n");
+    static uint8_t big_pass[sizeof(struct rm_render_pass) + 1024 * 64];
+    for (int n = 1; n <= 1000; n *= 10) {
+        struct rm_render_pass *bp = (void *)big_pass;
+        bp->queue = queue; bp->color_texture = tex;
+        bp->clear_r = 0; bp->clear_g = 0; bp->clear_b = 0; bp->clear_a = 1;
+        uint8_t *cc = big_pass + sizeof *bp; uint32_t nb2 = 0;
+        struct rm_enc_pipeline *p0 = (void *)(cc + nb2);
+        p0->h.type = RM_ENC_SET_PIPELINE; p0->h.size = sizeof *p0; p0->pipeline = pso;
+        nb2 += sizeof *p0;
+        struct rm_enc_vbuf *v0 = (void *)(cc + nb2);
+        v0->h.type = RM_ENC_SET_VERTEX_BUFFER; v0->h.size = sizeof *v0;
+        v0->buffer = vbuf; v0->offset = 0; v0->index = 0;
+        nb2 += sizeof *v0;
+        for (int i = 0; i < n; i++) {          /* n draws */
+            struct rm_enc_draw *dd = (void *)(cc + nb2);
+            dd->h.type = RM_ENC_DRAW; dd->h.size = sizeof *dd;
+            dd->primitive = 3; dd->start = 0; dd->count = 3;
+            nb2 += sizeof *dd;
+        }
+        bp->cmd_bytes = nb2;
+        double samples[30];
+        for (int k = 0; k < 30; k++) {
+            double s0 = now_ms();
+            call(RM_OP_SUBMIT_RENDER_PASS, big_pass, (uint32_t)(sizeof *bp + nb2), &ru, sizeof ru, NULL);
+            samples[k] = now_ms() - s0;
+        }
+        for (int i = 1; i < 30; i++)            /* insertion sort for percentiles */
+            for (int j = i; j > 0 && samples[j] < samples[j-1]; j--) {
+                double t = samples[j]; samples[j] = samples[j-1]; samples[j-1] = t; }
+        printf("    %4d draws (%5u B)  median %6.2f ms   p95 %6.2f ms\n",
+               n, nb2, samples[15], samples[28]);
+    }
 
     call(RM_OP_STATS, NULL, 0, &ru, sizeof ru, NULL);
     printf("\n  live handles on host: %llu\n", (unsigned long long)ru.value);

@@ -91,15 +91,44 @@ static int reply(int fd, struct rm_hdr *req, uint32_t status, const void *payloa
     return len ? wr(fd, payload, len) : 0;
 }
 
+/* Release every handle this connection interned. Without it the table grows
+ * for the lifetime of the daemon and GPU memory is never reclaimed -- a
+ * long-lived debugging rig would leak every resource of every past session. */
+static void rm_reset_table(void) {
+    for (uint32_t i = 0; i < g_slot_count; i++)
+        if (g_slots[i].in_use) {
+            CFRelease((__bridge CFTypeRef)g_slots[i].obj);
+            g_slots[i].obj = nil;
+            g_slots[i].in_use = 0;
+            g_slots[i].generation++;
+        }
+    g_live = 0;
+}
+
+/* Resource uploads are megabytes, not kilobytes. A fixed 64KB payload buffer
+ * silently closed the connection on the first 1MB buffer upload, which the
+ * guest saw only as SIGPIPE -- grow on demand instead, with a cap so a bogus
+ * length field cannot exhaust host memory. */
+#define RM_MAX_PAYLOAD (256u << 20)
+
 static void serve(int fd) {
-    uint8_t payload[65536];
+    uint8_t *payload = NULL;
+    uint32_t payload_cap = 0;
     for (;;) {
         struct rm_hdr h;
-        if (rd(fd, &h, sizeof h)) return;
-        if (h.magic != RM_MAGIC)   { reply(fd, &h, RM_ERR_BAD_MAGIC, NULL, 0); return; }
-        if (h.version != RM_VERSION) { reply(fd, &h, RM_ERR_BAD_VERSION, NULL, 0); return; }
-        if (h.payload_len > sizeof payload) return;
-        if (h.payload_len && rd(fd, payload, h.payload_len)) return;
+        if (rd(fd, &h, sizeof h)) break;
+        if (h.magic != RM_MAGIC)   { reply(fd, &h, RM_ERR_BAD_MAGIC, NULL, 0); break; }
+        if (h.version != RM_VERSION) { reply(fd, &h, RM_ERR_BAD_VERSION, NULL, 0); break; }
+        if (h.payload_len > RM_MAX_PAYLOAD) {
+            fprintf(stderr, "[rmetald] payload %u exceeds cap\n", h.payload_len);
+            reply(fd, &h, RM_ERR_SHORT_PAYLOAD, NULL, 0); break;
+        }
+        if (h.payload_len > payload_cap) {
+            uint8_t *np = realloc(payload, h.payload_len);
+            if (!np) { reply(fd, &h, RM_ERR_SHORT_PAYLOAD, NULL, 0); break; }
+            payload = np; payload_cap = h.payload_len;
+        }
+        if (h.payload_len && rd(fd, payload, h.payload_len)) break;
 
         @autoreleasepool {
         uint32_t err = RM_OK;
@@ -181,7 +210,11 @@ static void serve(int fd) {
             if (h.payload_len < sizeof *a) { reply(fd,&h,RM_ERR_SHORT_PAYLOAD,NULL,0); break; }
             id o = rm_resolve(a->device, &err);
             if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
-            const void *init = (h.payload_len > sizeof *a) ? payload + sizeof *a : NULL;
+            uint32_t inline_len = h.payload_len - (uint32_t)sizeof *a;
+            if (inline_len && a->length != inline_len) {   /* declared vs delivered */
+                reply(fd, &h, RM_ERR_SHORT_PAYLOAD, NULL, 0); break;
+            }
+            const void *init = inline_len ? payload + sizeof *a : NULL;
             id<MTLBuffer> b = init
                 ? [(id<MTLDevice>)o newBufferWithBytes:init length:a->length options:MTLResourceStorageModeShared]
                 : [(id<MTLDevice>)o newBufferWithLength:a->length options:MTLResourceStorageModeShared];
@@ -243,7 +276,10 @@ static void serve(int fd) {
         }
         case RM_OP_SUBMIT_RENDER_PASS: {
             struct rm_render_pass *a = (void *)payload;
-            if (h.payload_len < sizeof *a) { reply(fd,&h,RM_ERR_SHORT_PAYLOAD,NULL,0); break; }
+            if (h.payload_len < sizeof *a ||
+                a->cmd_bytes > h.payload_len - sizeof *a) {   /* stream must fit the frame */
+                reply(fd,&h,RM_ERR_SHORT_PAYLOAD,NULL,0); break;
+            }
             id q = rm_resolve(a->queue, &err);          if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
             id tex = rm_resolve(a->color_texture, &err); if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
             MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -260,6 +296,20 @@ static void serve(int fd) {
             while (off + sizeof(struct rm_enc_hdr) <= a->cmd_bytes) {
                 const struct rm_enc_hdr *rec = (const void *)(p + off);
                 if (rec->size < sizeof *rec || off + rec->size > a->cmd_bytes) { bad = 1; break; }
+                /* Every record must be at least its own struct size. Without
+                 * this a short record would be read past its end -- the
+                 * command stream is attacker-controlled input. */
+                {
+                    uint32_t need = 0;
+                    switch (rec->type) {
+                    case RM_ENC_SET_PIPELINE:     need = sizeof(struct rm_enc_pipeline); break;
+                    case RM_ENC_SET_VERTEX_BUFFER:need = sizeof(struct rm_enc_vbuf);     break;
+                    case RM_ENC_SET_VIEWPORT:     need = sizeof(struct rm_enc_viewport); break;
+                    case RM_ENC_DRAW:             need = sizeof(struct rm_enc_draw);     break;
+                    default: need = 0xffffffff; break;
+                    }
+                    if (rec->size < need) { bad = 1; break; }
+                }
                 switch (rec->type) {
                 case RM_ENC_SET_PIPELINE: {
                     const struct rm_enc_pipeline *c = (const void *)rec;
@@ -307,9 +357,28 @@ static void serve(int fd) {
         }
         }
     }
+    free(payload);
 }
 
-int main(void) {
+/* A shared secret, required as the first frame of every connection. The daemon
+ * compiles arbitrary shader source and allocates GPU memory on request, so an
+ * unauthenticated listener on a routable interface is a remote code-execution
+ * surface for anyone on the network. Bound to an explicit address as well. */
+static char g_token[64];
+
+static int authenticate(int fd) {
+    struct rm_hdr h;
+    if (rd(fd, &h, sizeof h)) return 0;
+    if (h.magic != RM_MAGIC || h.opcode != RM_OP_PING) return 0;
+    if (h.payload_len != strlen(g_token)) return 0;
+    char got[sizeof g_token];
+    if (rd(fd, got, h.payload_len)) return 0;
+    if (memcmp(got, g_token, h.payload_len) != 0) return 0;
+    reply(fd, &h, RM_OK, NULL, 0);
+    return 1;
+}
+
+int main(int argc, char **argv) {
     @autoreleasepool {
         id<MTLDevice> d = MTLCreateSystemDefaultDevice();
         if (!d) { fprintf(stderr, "no Metal device\n"); return 1; }
@@ -318,19 +387,31 @@ int main(void) {
                 [d supportsFamily:MTLGPUFamilyApple7], [d supportsFamily:MTLGPUFamilyApple8],
                 [d supportsFamily:MTLGPUFamilyApple9], [d supportsBCTextureCompression]);
     }
+    const char *bind_addr = (argc > 1) ? argv[1] : "127.0.0.1";
+    const char *tok = getenv("RMETAL_TOKEN");
+    if (!tok || !*tok) { fprintf(stderr, "set RMETAL_TOKEN to a shared secret\n"); return 1; }
+    snprintf(g_token, sizeof g_token, "%s", tok);
+
     int s = socket(AF_INET, SOCK_STREAM, 0);
     int one = 1; setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-    struct sockaddr_in a = { .sin_family = AF_INET, .sin_port = htons(RM_PORT),
-                             .sin_addr.s_addr = INADDR_ANY };
+    struct sockaddr_in a = { .sin_family = AF_INET, .sin_port = htons(RM_PORT) };
+    if (inet_pton(AF_INET, bind_addr, &a.sin_addr) != 1) {
+        fprintf(stderr, "bad bind address %s\n", bind_addr); return 1;
+    }
     if (bind(s, (struct sockaddr *)&a, sizeof a) || listen(s, 4)) { perror("bind/listen"); return 1; }
-    fprintf(stderr, "[rmetald] listening on :%d\n", RM_PORT);
+    fprintf(stderr, "[rmetald] listening on %s:%d (token required)\n", bind_addr, RM_PORT);
     for (;;) {
         int c = accept(s, NULL, NULL);
         if (c < 0) continue;
         setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
-        fprintf(stderr, "[rmetald] client connected\n");
+        if (!authenticate(c)) {
+            fprintf(stderr, "[rmetald] rejected unauthenticated client\n");
+            close(c); continue;
+        }
+        fprintf(stderr, "[rmetald] client authenticated\n");
         serve(c);
         close(c);
-        fprintf(stderr, "[rmetald] client gone; live handles=%u\n", g_live);
+        fprintf(stderr, "[rmetald] client gone; releasing %u session handles\n", g_live);
+        rm_reset_table();
     }
 }

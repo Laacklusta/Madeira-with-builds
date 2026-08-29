@@ -65,11 +65,32 @@ rasterisation result rather than "some pixels are lit". Shaders are compiled
 from source on the host; buffer, texture, library, function, pipeline, encode,
 commit, wait and readback all cross the boundary.
 
-**Transport is not the bottleneck.** A round trip costs 0.06 ms while the whole
-render pass costs 6.76 ms, so the time is GPU execution plus the synchronous
-`waitUntilCompleted`, not the wire. Adding commands to a pass is therefore
-nearly free, which is what makes the batched design viable: a realistic frame
-of a thousand encoder commands is still one round trip.
+## Measured scale
+
+```
+upload    1 MB    0.7 ms   1357 MB/s     download 512x512  (1 MB)  1324 MB/s
+upload    4 MB    1.6 ms   2522 MB/s     download 1024x1024(4 MB)  2296 MB/s
+upload   16 MB    3.6 ms   4419 MB/s
+upload   64 MB   12.5 ms   5119 MB/s
+
+render pass, 30 samples each:
+       1 draws (   80 B)  median 0.23 ms   p95 0.52 ms
+      10 draws (  368 B)  median 0.20 ms   p95 0.50 ms
+     100 draws ( 3248 B)  median 0.22 ms   p95 0.50 ms
+    1000 draws (32048 B)  median 0.28 ms   p95 0.31 ms
+```
+
+**A thousand draws costs the same as one** — 0.23 to 0.28 ms. Command count is
+effectively free; the fixed cost is the round trip plus `waitUntilCompleted`.
+That is what makes the batched design viable.
+
+⚠️ An earlier single sample read 6.76 ms and was a *cold* first submit
+including shader and pipeline warmup. One sample proves nothing; these are
+medians and p95 over 30 passes.
+
+Per-call latency is 0.06 ms, but that alone never justified "transport is not
+the bottleneck" — bulk transfer and command decoding had to be measured
+separately, and are above.
 
 ## Next
 
