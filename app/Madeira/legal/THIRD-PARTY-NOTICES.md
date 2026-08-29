@@ -10,11 +10,12 @@ dependency license texts are in `LICENSES/`. See "Why GPL-3.0-or-later" below.
 
 ## Components that ship in the built app
 
-| Component | License | Notes |
-|---|---|---|
-| **Wine** | LGPL-2.1-or-later | Forked. `ntdll`, `wineserver`, `win32u`, ARM64EC loader modified for iOS. |
-| **FEX-Emu** | MIT | Forked. x86-64 → ARM64 translation. |
-| **DXMT** | MIT | Forked. D3D11 → Metal. |
+| Component | Upstream license | **Madeira's fork** | Notes |
+|---|---|---|---|
+| **Wine** | LGPL-2.1-or-later | **GPL-3.0-or-later** | Fork relicensed under LGPL-2.1 §3, which expressly permits applying the ordinary GPL to a copy. `ntdll`, `wineserver`, `win32u`, ARM64EC loader modified for iOS. |
+| **FEX-Emu** | MIT | upstream MIT + **modifications GPL-3.0-or-later** | Forked. x86-64 → ARM64 translation. |
+| **DXMT** | MIT | upstream MIT + **modifications GPL-3.0-or-later** | Forked. D3D11 → Metal. |
+| **rpmalloc** | 0BSD | 0BSD + **Will Faust's modifications GPL-3.0-or-later** | Nested submodule of FEX, forked to `willfaust/rpmalloc`. Commits by Ryan Houdek are **not** relicensed. |
 | **GMP** 6.3.0 | **LGPL-3.0-or-later** or GPL-2.0-or-later | Static (`libgmp.a`). |
 | **Nettle / Hogweed** 3.10.1 | **LGPL-3.0-or-later** or GPL-2.0-or-later | Static (`libnettle.a`, `libhogweed.a`). |
 | **GnuTLS** 3.8.9 | LGPL-2.1-or-later | Static (`libgnutls.a`). Used by Wine's bcrypt/secur32/crypt32. |
@@ -48,6 +49,33 @@ over-relied on:
   repositories need their own licensing decision; this file governs the main
   repository.
 
+## Each fork carries its own license notice
+
+`THIRD-PARTY-NOTICES.md` in this repository does **not** relicense code that
+lives in a separate submodule. Each fork therefore carries its own
+`LICENSE-MADEIRA.md` and `CONTRIBUTING.md` stating what is licensed how:
+
+- `wine/LICENSE-MADEIRA.md` — the LGPL-2.1 §3 conversion, exactly what changed
+  and the two deliberate exceptions.
+- `FEX/LICENSE-MADEIRA.md`, `research/dxmt/LICENSE-MADEIRA.md` — upstream MIT
+  preserved; Madeira's modifications GPL-3.0-or-later.
+- `FEX/External/rpmalloc/LICENSE-MADEIRA.md` — 0BSD preserved; only Will
+  Faust's commits are GPL, and authorship is distinguishable via `git log`.
+
+### What relicensing does and does not achieve
+
+The goal is that **distributed** derivatives stay open source. Stated honestly:
+
+- **It is not retroactive.** The FEX, DXMT and Wine forks were public before
+  this change, under their upstream permissive/lesser licenses. Anyone who
+  already obtained a copy keeps those rights, and that grant cannot be revoked.
+  Only contributions from 2026-08-28 onward are GPL-only.
+- Upstream projects are unaffected and their code stays available from them
+  under its original license.
+- The GPL constrains distribution, not private modification or internal use.
+- It does not cover games or other independent programs merely run through
+  Madeira.
+
 ## Original vs. derived work in this repository
 
 Do **not** assume that everything outside the submodules is original. It is not.
@@ -76,21 +104,16 @@ this project's license and are **no longer tracked in this repository**;
 `app/Madeira/x86_64-vcruntime/*.dll` is gitignored and must be supplied locally.
 See `tools/fetch-vcruntime.md`.
 
-### Known defect in this repository's history
+### Earlier malformed copies were purged from history
 
-Twelve such DLLs were previously committed here, and they had been **modified**:
-each one's Authenticode signature was truncated away in commit `41f0d74`,
-removing exactly the advertised certificate payload (for example
-`concrt140.dll`, 321,696 bytes down to 301,056 -- precisely the 20,640-byte
-certificate table). In each file the certificate offset in the PE header equals
-the file's own length, so the signature is entirely absent while the header
-still claims it is present.
+Twelve such DLLs were previously committed here, and they had been modified:
+each one's Authenticode signature had been truncated away, removing exactly the
+advertised certificate payload and leaving a PE header still claiming a
+signature the file no longer contained.
 
-Microsoft's redistribution permission applies to eligible files unmodified, so
-those copies should not be redistributed by anyone. That commit is already in
-published history, so removing the files going forward does not remove them from
-the past; rewriting history is the only way to do that, and it has not been
-done. This is recorded here so the state of the repository is not misrepresented.
+Those blobs have been removed from this repository's history entirely. Anyone
+holding a clone or fork taken before the rewrite may still have them, and should
+not redistribute those copies.
 
 ## Corresponding source for the statically linked libraries
 
