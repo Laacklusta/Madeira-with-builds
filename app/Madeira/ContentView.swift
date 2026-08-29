@@ -1998,6 +1998,25 @@ struct ContentView: View {
             winios_phase("pool-ready")
             logStore.log("BRK suspension lasted \(String(format: "%.2f", elapsed))s")
 
+            // ml762: remote Metal backend. Documents/madeira-remote.txt holds
+            // "<host-ip> <token>" and routes winemetal to a Metal daemon on that
+            // host instead of the local device. The mode is decided ONCE per
+            // process: flipping it later would leave handles from two address
+            // spaces alive at the same time, which is precisely what the handle
+            // tag exists to make impossible.
+            if let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+               let txt = try? String(contentsOf: d.appendingPathComponent("madeira-remote.txt"), encoding: .utf8) {
+                let parts = txt.trimmingCharacters(in: .whitespacesAndNewlines)
+                                .split(separator: " ", maxSplits: 1).map(String.init)
+                if parts.count == 2 {
+                    setenv("DXMT_REMOTE_METAL", parts[0], 1)
+                    setenv("RMETAL_TOKEN", parts[1], 1)
+                    logStore.log("remote Metal: host=\(parts[0]) via madeira-remote.txt", level: .success)
+                } else if !parts.isEmpty {
+                    logStore.log("madeira-remote.txt needs '<host-ip> <token>'", level: .error)
+                }
+            }
+
             // ml761: top-level API census. Documents/madeira-apicensus.txt == "1"
             // counts every call across the PE->unix winemetal boundary and
             // classifies each as producer, consumer, lifetime, query, sync,
