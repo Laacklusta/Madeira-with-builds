@@ -102,27 +102,43 @@ int main(void) {
     memset(&r, 0, sizeof r);
     CHECK(wmtw_pack_render((struct wmtcmd_base *)&chain[0], &p, &r) == WMTW_PACK_OK,
           "pack a real list for validation");
-    struct wmtw_batch batch = { WMTW_BATCH_MAGIC, WMTW_VERSION, 0,
-                                p.rec_len, p.count, p.side_len, 0 };
-    struct wmtw_dec_result d;
-    CHECK(wmtw_validate_batch(&batch, recbuf, sidebuf, &d) == WMTW_DEC_OK,
+    static uint8_t payload[WMTW_MAX_BATCH_BYTES + WMTW_MAX_SIDECAR_BYTES + 64];
+    struct wmtw_batch *bp = (void *)payload;
+    bp->magic = WMTW_BATCH_MAGIC; bp->version = WMTW_VERSION; bp->encoder_kind = 0;
+    bp->record_bytes = p.rec_len; bp->record_count = p.count;
+    bp->sidecar_bytes = p.side_len; bp->reserved = 0;
+    memcpy(payload + sizeof *bp, recbuf, p.rec_len);
+    memcpy(payload + sizeof *bp + p.rec_len, sidebuf, p.side_len);
+    uint32_t plen = (uint32_t)(sizeof *bp + p.rec_len + p.side_len);
+    struct wmtw_dec_result d; struct wmtw_view v;
+    CHECK(wmtw_validate_batch(payload, plen, &v, &d) == WMTW_DEC_OK,
           "packer output passes the production validator");
+    CHECK(v.rec_bytes == p.rec_len && v.side_bytes == p.side_len, "view spans match");
     CHECK(d.record_index == LONGN, "validator counts the same records the packer wrote");
+    /* a header claiming more than arrived must be rejected, not believed */
+    CHECK(wmtw_validate_batch(payload, plen - 1, &v, &d) == WMTW_DEC_NOT_EXACT,
+          "header longer than the received payload rejected");
+    bp->encoder_kind = 1;
+    CHECK(wmtw_validate_batch(payload, plen, &v, &d) == WMTW_DEC_UNIMPLEMENTED_OP,
+          "unknown encoder kind rejected");
+    bp->encoder_kind = 0;
 
     /* validator must reject a corrupted prologue */
-    struct wmtw_batch bad = batch; bad.magic = 0;
-    CHECK(wmtw_validate_batch(&bad, recbuf, sidebuf, &d) != WMTW_DEC_OK, "bad magic rejected");
-    bad = batch; bad.version = 99;
-    CHECK(wmtw_validate_batch(&bad, recbuf, sidebuf, &d) != WMTW_DEC_OK, "bad version rejected");
-    bad = batch; bad.record_count = batch.record_count + 1;
-    CHECK(wmtw_validate_batch(&bad, recbuf, sidebuf, &d) == WMTW_DEC_NOT_EXACT,
+    uint32_t save_rc = bp->record_count, save_rb = bp->record_bytes;
+    bp->magic = 0;
+    CHECK(wmtw_validate_batch(payload, plen, &v, &d) != WMTW_DEC_OK, "bad magic rejected");
+    bp->magic = WMTW_BATCH_MAGIC; bp->version = 99;
+    CHECK(wmtw_validate_batch(payload, plen, &v, &d) != WMTW_DEC_OK, "bad version rejected");
+    bp->version = WMTW_VERSION; bp->record_count = save_rc + 1;
+    CHECK(wmtw_validate_batch(payload, plen, &v, &d) == WMTW_DEC_NOT_EXACT,
           "record-count mismatch rejected");
-    bad = batch; bad.record_bytes = batch.record_bytes - 1;
-    CHECK(wmtw_validate_batch(&bad, recbuf, sidebuf, &d) != WMTW_DEC_OK,
-          "truncated record region rejected");
-    bad = batch; bad.record_count = WMTW_MAX_RECORDS + 1;
-    CHECK(wmtw_validate_batch(&bad, recbuf, sidebuf, &d) == WMTW_DEC_TOO_MANY,
+    bp->record_count = save_rc; bp->record_bytes = WMTW_MAX_BATCH_BYTES + 1;
+    CHECK(wmtw_validate_batch(payload, plen, &v, &d) == WMTW_DEC_TRUNCATED,
+          "oversized record region rejected");
+    bp->record_bytes = save_rb; bp->record_count = WMTW_MAX_RECORDS + 1;
+    CHECK(wmtw_validate_batch(payload, plen, &v, &d) == WMTW_DEC_TOO_MANY,
           "record cap enforced by the validator");
+    bp->record_count = save_rc;
 
     printf("\n%d checks, %d failures\n", checks, fails);
     return fails != 0;

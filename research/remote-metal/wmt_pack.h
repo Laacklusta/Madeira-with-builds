@@ -68,6 +68,11 @@ static inline void *wmtw_rec_alloc(struct wmtw_packer *p, uint32_t size, uint16_
 /* Returns the sidecar OFFSET, or UINT32_MAX on overflow. Never a pointer:
  * the whole point is that the receiver is in another address space. */
 static inline uint32_t wmtw_side_put(struct wmtw_packer *p, const void *data, uint32_t bytes) {
+    /* 8-byte align. Viewports and scissors are cast straight to Metal structs
+     * on replay, and a misaligned load of a double is undefined. Aligning here
+     * costs at most 7 bytes per entry and removes a whole class of
+     * platform-dependent failure. */
+    p->side_len = (p->side_len + 7u) & ~7u;
     if (bytes > WMTW_MAX_SIDECAR_BYTES || p->side_len + bytes > p->side_cap) return 0xffffffffu;
     uint32_t off = p->side_len;
     memcpy(p->side + off, data, bytes);

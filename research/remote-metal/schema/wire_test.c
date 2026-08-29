@@ -18,12 +18,19 @@ static int fails, checks;
  * the only implementation, so these tests exercise what rmetald actually runs
  * -- a test that walks the stream its own way proves only that the test works.
  */
+/* Assemble a real payload: prologue, records, sidecar -- exactly as it would
+ * arrive on the wire, so the validator sees what rmetald will see. */
+static uint8_t payload[WMTW_MAX_BATCH_BYTES + WMTW_MAX_SIDECAR_BYTES + 64];
 static enum wmtw_dec_status vcheck(const uint8_t *rec, uint32_t rec_bytes,
-                                   uint32_t count, uint32_t sidecar_bytes) {
-    struct wmtw_batch b = { WMTW_BATCH_MAGIC, WMTW_VERSION, 0,
-                            rec_bytes, count, sidecar_bytes, 0 };
-    struct wmtw_dec_result d;
-    return wmtw_validate_batch(&b, rec, 0, &d);
+                                   uint32_t count, const uint8_t *side, uint32_t side_bytes) {
+    struct wmtw_batch *b = (void *)payload;
+    b->magic = WMTW_BATCH_MAGIC; b->version = WMTW_VERSION; b->encoder_kind = 0;
+    b->record_bytes = rec_bytes; b->record_count = count;
+    b->sidecar_bytes = side_bytes; b->reserved = 0;
+    memcpy(payload + sizeof *b, rec, rec_bytes);
+    if (side_bytes) memcpy(payload + sizeof *b + rec_bytes, side, side_bytes);
+    struct wmtw_dec_result d; struct wmtw_view v;
+    return wmtw_validate_batch(payload, (uint32_t)(sizeof *b + rec_bytes + side_bytes), &v, &d);
 }
 
 int main(void) {
@@ -65,7 +72,7 @@ int main(void) {
     ss->scissors_offset = wmtw_side_put(&p, &sc, sizeof sc);
     ss->scissors_count  = 1;
 
-    CHECK(vcheck(recbuf, p.rec_len, p.count, p.side_len) == WMTW_DEC_OK,
+    CHECK(vcheck(recbuf, p.rec_len, p.count, sidebuf, p.side_len) == WMTW_DEC_OK,
           "well-formed batch passes the production validator");
     CHECK(p.count == 15, "all 15 record types round-trip");
     printf("  packed %u records, %u record bytes, %u sidecar bytes\n",
@@ -86,31 +93,31 @@ int main(void) {
     struct wmtw_hdr *h0 = (void *)bad_buf;
     uint32_t s0 = h0->size;
     h0->size = 0;                        /* size smaller than the header */
-    CHECK(vcheck(bad_buf, 128, 99, 0) == WMTW_DEC_BAD_SIZE, "zero-size record rejected");
+    CHECK(vcheck(bad_buf, 128, 99, sidebuf, 0) == WMTW_DEC_BAD_SIZE, "zero-size record rejected");
     h0->size = 0xffff;                   /* size past the end of the batch */
-    CHECK(vcheck(bad_buf, 128, 99, 0) == WMTW_DEC_TRUNCATED, "oversized record rejected");
+    CHECK(vcheck(bad_buf, 128, 99, sidebuf, 0) == WMTW_DEC_TRUNCATED, "oversized record rejected");
     h0->size = s0;
     h0->version = 99;                    /* wrong version */
-    CHECK(vcheck(bad_buf, 128, 99, 0) == WMTW_DEC_BAD_VERSION, "version mismatch rejected");
+    CHECK(vcheck(bad_buf, 128, 99, sidebuf, 0) == WMTW_DEC_BAD_VERSION, "version mismatch rejected");
     h0->version = WMTW_VERSION;
 
     /* sidecar reference pointing outside the region */
     struct wmtw_setfragmentbytes evil = { { WMTW_OP_SetFragmentBytes, WMTW_VERSION, sizeof evil },
                                           0, 0, 999999 };
-    CHECK(vcheck((uint8_t *)&evil, sizeof evil, 1, 16) == WMTW_DEC_SIDECAR_RANGE,
+    CHECK(vcheck((uint8_t *)&evil, sizeof evil, 1, sidebuf, 16) == WMTW_DEC_SIDECAR_RANGE,
           "oversized sidecar count rejected");
     struct wmtw_setfragmentbytes evil2 = { { WMTW_OP_SetFragmentBytes, WMTW_VERSION, sizeof evil2 },
                                            0, 8, 100 };
-    CHECK(vcheck((uint8_t *)&evil2, sizeof evil2, 1, 16) == WMTW_DEC_SIDECAR_RANGE,
+    CHECK(vcheck((uint8_t *)&evil2, sizeof evil2, 1, sidebuf, 16) == WMTW_DEC_SIDECAR_RANGE,
           "sidecar range past region rejected");
     /* integer overflow in offset+count must not wrap into acceptance */
     struct wmtw_setfragmentbytes evil3 = { { WMTW_OP_SetFragmentBytes, WMTW_VERSION, sizeof evil3 },
                                            0, 0xfffffff0u, 64 };
-    CHECK(vcheck((uint8_t *)&evil3, sizeof evil3, 1, 16) != WMTW_DEC_OK,
+    CHECK(vcheck((uint8_t *)&evil3, sizeof evil3, 1, sidebuf, 16) != WMTW_DEC_OK,
           "offset+count overflow rejected");
 
     /* trailing garbage: a batch whose records do not exactly fill it */
-    CHECK(vcheck(recbuf, p.rec_len - 3, p.count, p.side_len) != WMTW_DEC_OK,
+    CHECK(vcheck(recbuf, p.rec_len - 3, p.count, sidebuf, p.side_len) != WMTW_DEC_OK,
           "truncated batch rejected");
 
     /* --- decoder-side validation, the half that faces the wire --- */
