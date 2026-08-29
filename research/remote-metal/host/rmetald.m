@@ -170,6 +170,138 @@ static void serve(int fd) {
             struct rm_ret_u64 r = { g_live };
             reply(fd, &h, RM_OK, &r, sizeof r); break;
         }
+        case RM_OP_NEW_COMMAND_QUEUE: {
+            id o = rm_resolve(((struct rm_arg_handle *)payload)->handle, &err);
+            if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
+            struct rm_ret_handle r = { rm_intern([(id<MTLDevice>)o newCommandQueue]) };
+            reply(fd, &h, RM_OK, &r, sizeof r); break;
+        }
+        case RM_OP_NEW_BUFFER: {
+            struct rm_new_buffer *a = (void *)payload;
+            if (h.payload_len < sizeof *a) { reply(fd,&h,RM_ERR_SHORT_PAYLOAD,NULL,0); break; }
+            id o = rm_resolve(a->device, &err);
+            if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
+            const void *init = (h.payload_len > sizeof *a) ? payload + sizeof *a : NULL;
+            id<MTLBuffer> b = init
+                ? [(id<MTLDevice>)o newBufferWithBytes:init length:a->length options:MTLResourceStorageModeShared]
+                : [(id<MTLDevice>)o newBufferWithLength:a->length options:MTLResourceStorageModeShared];
+            struct rm_ret_handle r = { rm_intern(b) };
+            reply(fd, &h, RM_OK, &r, sizeof r); break;
+        }
+        case RM_OP_NEW_TEXTURE: {
+            struct rm_new_texture *a = (void *)payload;
+            id o = rm_resolve(a->device, &err);
+            if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
+            MTLTextureDescriptor *d = [MTLTextureDescriptor
+                texture2DDescriptorWithPixelFormat:(MTLPixelFormat)a->pixel_format
+                width:(NSUInteger)a->width height:(NSUInteger)a->height mipmapped:NO];
+            d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+            d.storageMode = MTLStorageModeShared;
+            struct rm_ret_handle r = { rm_intern([(id<MTLDevice>)o newTextureWithDescriptor:d]) };
+            reply(fd, &h, RM_OK, &r, sizeof r); break;
+        }
+        case RM_OP_NEW_LIBRARY: {
+            struct rm_arg_handle *a = (void *)payload;
+            id o = rm_resolve(a->handle, &err);
+            if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
+            NSString *src = [[NSString alloc] initWithBytes:payload + sizeof *a
+                             length:h.payload_len - sizeof *a encoding:NSUTF8StringEncoding];
+            NSError *e = nil;
+            id<MTLLibrary> lib = [(id<MTLDevice>)o newLibraryWithSource:src options:nil error:&e];
+            if (!lib) { /* surface the compiler diagnostic; a silent nil is useless */
+                const char *m = [[e localizedDescription] UTF8String] ?: "shader compile failed";
+                fprintf(stderr, "[rmetald] library: %s\n", m);
+                reply(fd, &h, RM_ERR_WRONG_CLASS, NULL, 0); break;
+            }
+            struct rm_ret_handle r = { rm_intern(lib) };
+            reply(fd, &h, RM_OK, &r, sizeof r); break;
+        }
+        case RM_OP_NEW_FUNCTION: {
+            struct rm_arg_handle *a = (void *)payload;
+            id o = rm_resolve(a->handle, &err);
+            if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
+            NSString *n = [[NSString alloc] initWithBytes:payload + sizeof *a
+                           length:h.payload_len - sizeof *a encoding:NSUTF8StringEncoding];
+            struct rm_ret_handle r = { rm_intern([(id<MTLLibrary>)o newFunctionWithName:n]) };
+            reply(fd, &h, RM_OK, &r, sizeof r); break;
+        }
+        case RM_OP_NEW_RENDER_PIPELINE: {
+            struct rm_new_pipeline *a = (void *)payload;
+            id dev = rm_resolve(a->device, &err); if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
+            id vfn = rm_resolve(a->vfn, &err);    if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
+            id ffn = rm_resolve(a->ffn, &err);    if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
+            MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
+            d.vertexFunction = vfn; d.fragmentFunction = ffn;
+            d.colorAttachments[0].pixelFormat = (MTLPixelFormat)a->pixel_format;
+            NSError *e = nil;
+            id ps = [(id<MTLDevice>)dev newRenderPipelineStateWithDescriptor:d error:&e];
+            if (!ps) { fprintf(stderr, "[rmetald] pipeline: %s\n",
+                               [[e localizedDescription] UTF8String] ?: "?");
+                       reply(fd, &h, RM_ERR_WRONG_CLASS, NULL, 0); break; }
+            struct rm_ret_handle r = { rm_intern(ps) };
+            reply(fd, &h, RM_OK, &r, sizeof r); break;
+        }
+        case RM_OP_SUBMIT_RENDER_PASS: {
+            struct rm_render_pass *a = (void *)payload;
+            if (h.payload_len < sizeof *a) { reply(fd,&h,RM_ERR_SHORT_PAYLOAD,NULL,0); break; }
+            id q = rm_resolve(a->queue, &err);          if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
+            id tex = rm_resolve(a->color_texture, &err); if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
+            MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+            rp.colorAttachments[0].texture = tex;
+            rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+            rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+            rp.colorAttachments[0].clearColor = MTLClearColorMake(a->clear_r, a->clear_g, a->clear_b, a->clear_a);
+            id<MTLCommandBuffer> cb = [(id<MTLCommandQueue>)q commandBuffer];
+            id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
+
+            /* Walk the CONTIGUOUS stream by size, never by pointer. */
+            const uint8_t *p = payload + sizeof *a;
+            uint32_t off = 0, bad = 0;
+            while (off + sizeof(struct rm_enc_hdr) <= a->cmd_bytes) {
+                const struct rm_enc_hdr *rec = (const void *)(p + off);
+                if (rec->size < sizeof *rec || off + rec->size > a->cmd_bytes) { bad = 1; break; }
+                switch (rec->type) {
+                case RM_ENC_SET_PIPELINE: {
+                    const struct rm_enc_pipeline *c = (const void *)rec;
+                    id ps = rm_resolve(c->pipeline, &err); if (err != RM_OK) { bad = 1; break; }
+                    [enc setRenderPipelineState:ps]; break;
+                }
+                case RM_ENC_SET_VERTEX_BUFFER: {
+                    const struct rm_enc_vbuf *c = (const void *)rec;
+                    id b = rm_resolve(c->buffer, &err); if (err != RM_OK) { bad = 1; break; }
+                    [enc setVertexBuffer:b offset:(NSUInteger)c->offset atIndex:(NSUInteger)c->index]; break;
+                }
+                case RM_ENC_SET_VIEWPORT: {
+                    const struct rm_enc_viewport *c = (const void *)rec;
+                    [enc setViewport:(MTLViewport){c->x, c->y, c->w, c->h_, c->znear, c->zfar}]; break;
+                }
+                case RM_ENC_DRAW: {
+                    const struct rm_enc_draw *c = (const void *)rec;
+                    [enc drawPrimitives:(MTLPrimitiveType)c->primitive
+                            vertexStart:(NSUInteger)c->start vertexCount:(NSUInteger)c->count]; break;
+                }
+                default: bad = 1; break;
+                }
+                if (bad) break;
+                off += rec->size;
+            }
+            [enc endEncoding];
+            if (bad) { reply(fd, &h, err ? err : RM_ERR_BAD_OPCODE, NULL, 0); break; }
+            [cb commit];
+            [cb waitUntilCompleted];   /* synchronous by design */
+            struct rm_ret_u64 r = { (uint64_t)[cb status] };
+            reply(fd, &h, RM_OK, &r, sizeof r); break;
+        }
+        case RM_OP_TEXTURE_GETBYTES: {
+            id o = rm_resolve(((struct rm_arg_handle *)payload)->handle, &err);
+            if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
+            id<MTLTexture> t = o;
+            NSUInteger w = t.width, ht = t.height, bpr = w * 4, total = bpr * ht;
+            uint8_t *px = malloc(total);
+            [t getBytes:px bytesPerRow:bpr fromRegion:MTLRegionMake2D(0,0,w,ht) mipmapLevel:0];
+            reply(fd, &h, RM_OK, px, (uint32_t)total);
+            free(px); break;
+        }
         default:
             reply(fd, &h, RM_ERR_BAD_OPCODE, NULL, 0); break;
         }

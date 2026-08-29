@@ -135,6 +135,110 @@ int main(int argc, char **argv) {
     printf("    ping (no Metal)   %.4f ms  -> %.0f calls/sec\n", ping, 1000.0 / ping);
     printf("    ArrayCount        %.4f ms  -> %.0f calls/sec\n", work, 1000.0 / work);
 
+    /* ================= offscreen triangle ================= */
+    printf("\n  [offscreen render]\n");
+    call(RM_OP_COPY_ALL_DEVICES, NULL, 0, &rh, sizeof rh, NULL);
+    arr = rh.handle;
+    struct rm_arg_handle_u64 a0 = { arr, 0 };
+    call(RM_OP_ARRAY_OBJECT, &a0, sizeof a0, &rh, sizeof rh, NULL);
+    dev = rh.handle;
+
+    struct rm_arg_handle adev = { dev };
+    call(RM_OP_NEW_COMMAND_QUEUE, &adev, sizeof adev, &rh, sizeof rh, NULL);
+    uint64_t queue = rh.handle;
+
+    /* vertex buffer: one triangle in clip space */
+    static const float verts[6] = { 0.0f, 0.8f,  -0.8f, -0.8f,  0.8f, -0.8f };
+    uint8_t buf[sizeof(struct rm_new_buffer) + sizeof verts];
+    struct rm_new_buffer *nb = (void *)buf;
+    nb->device = dev; nb->length = sizeof verts;
+    memcpy(buf + sizeof *nb, verts, sizeof verts);
+    st = call(RM_OP_NEW_BUFFER, buf, sizeof buf, &rh, sizeof rh, NULL);
+    uint64_t vbuf = rh.handle;
+    printf("    newBuffer(%zub)   -> %s handle=%llu\n", sizeof verts, statname(st),
+           (unsigned long long)vbuf);
+
+    /* render target */
+    struct rm_new_texture nt = { dev, 80 /*MTLPixelFormatBGRA8Unorm*/, 64, 64 };
+    st = call(RM_OP_NEW_TEXTURE, &nt, sizeof nt, &rh, sizeof rh, NULL);
+    uint64_t tex = rh.handle;
+    printf("    newTexture(64x64) -> %s\n", statname(st));
+
+    /* shaders, compiled on the host */
+    static const char *src =
+        "#include <metal_stdlib>\n using namespace metal;\n"
+        "vertex float4 vmain(const device float2 *p [[buffer(0)]], uint vid [[vertex_id]])\n"
+        "{ return float4(p[vid], 0, 1); }\n"
+        "fragment float4 fmain() { return float4(1.0, 0.5, 0.25, 1.0); }\n";
+    uint8_t lb[sizeof(struct rm_arg_handle) + 512];
+    struct rm_arg_handle *la = (void *)lb;
+    la->handle = dev;
+    size_t slen = strlen(src);
+    memcpy(lb + sizeof *la, src, slen);
+    st = call(RM_OP_NEW_LIBRARY, lb, (uint32_t)(sizeof *la + slen), &rh, sizeof rh, NULL);
+    uint64_t lib = rh.handle;
+    printf("    newLibrary        -> %s\n", statname(st));
+    if (st != RM_OK) { printf("    (shader failed to compile; see host log)\n"); close(g_fd); return 1; }
+
+    uint64_t fns[2];
+    const char *fnames[2] = { "vmain", "fmain" };
+    for (int i = 0; i < 2; i++) {
+        uint8_t fb[sizeof(struct rm_arg_handle) + 32];
+        struct rm_arg_handle *fa = (void *)fb; fa->handle = lib;
+        size_t n = strlen(fnames[i]); memcpy(fb + sizeof *fa, fnames[i], n);
+        call(RM_OP_NEW_FUNCTION, fb, (uint32_t)(sizeof *fa + n), &rh, sizeof rh, NULL);
+        fns[i] = rh.handle;
+    }
+    struct rm_new_pipeline np = { dev, fns[0], fns[1], 80 };
+    st = call(RM_OP_NEW_RENDER_PIPELINE, &np, sizeof np, &rh, sizeof rh, NULL);
+    uint64_t pso = rh.handle;
+    printf("    newPipeline       -> %s\n", statname(st));
+    if (st != RM_OK) { close(g_fd); return 1; }
+
+    /* ---- build the CONTIGUOUS command stream (no pointers) ---- */
+    uint8_t pass[sizeof(struct rm_render_pass) + 256];
+    struct rm_render_pass *rp = (void *)pass;
+    rp->queue = queue; rp->color_texture = tex;
+    rp->clear_r = 0.0; rp->clear_g = 0.0; rp->clear_b = 0.0; rp->clear_a = 1.0;
+    uint8_t *c = pass + sizeof *rp; uint32_t cb = 0;
+    struct rm_enc_viewport *vp = (void *)(c + cb);
+    vp->h.type = RM_ENC_SET_VIEWPORT; vp->h.size = sizeof *vp;
+    vp->x = 0; vp->y = 0; vp->w = 64; vp->h_ = 64; vp->znear = 0; vp->zfar = 1;
+    cb += sizeof *vp;
+    struct rm_enc_pipeline *ep = (void *)(c + cb);
+    ep->h.type = RM_ENC_SET_PIPELINE; ep->h.size = sizeof *ep; ep->pipeline = pso;
+    cb += sizeof *ep;
+    struct rm_enc_vbuf *ev = (void *)(c + cb);
+    ev->h.type = RM_ENC_SET_VERTEX_BUFFER; ev->h.size = sizeof *ev;
+    ev->buffer = vbuf; ev->offset = 0; ev->index = 0;
+    cb += sizeof *ev;
+    struct rm_enc_draw *ed = (void *)(c + cb);
+    ed->h.type = RM_ENC_DRAW; ed->h.size = sizeof *ed;
+    ed->primitive = 3 /*triangle*/; ed->start = 0; ed->count = 3;
+    cb += sizeof *ed;
+    rp->cmd_bytes = cb;
+
+    double tr0 = now_ms();
+    st = call(RM_OP_SUBMIT_RENDER_PASS, pass, (uint32_t)(sizeof *rp + cb), &ru, sizeof ru, NULL);
+    double trms = now_ms() - tr0;
+    printf("    submitRenderPass  -> %s  (4 encoder cmds in ONE round trip, %.2f ms)\n",
+           statname(st), trms);
+    if (st != RM_OK) { close(g_fd); return 1; }
+
+    /* ---- readback + checksum ---- */
+    static uint8_t px[64 * 64 * 4];
+    struct rm_arg_handle at = { tex };
+    uint32_t got = 0;
+    st = call(RM_OP_TEXTURE_GETBYTES, &at, sizeof at, px, sizeof px, &got);
+    uint32_t sum = 2166136261u, lit = 0;
+    for (uint32_t i = 0; i < got; i++) { sum ^= px[i]; sum *= 16777619u; }
+    for (uint32_t i = 0; i + 3 < got; i += 4) if (px[i] || px[i+1] || px[i+2]) lit++;
+    printf("    getBytes          -> %s %u bytes\n", statname(st), got);
+    printf("    fnv1a checksum    -> 0x%08x\n", sum);
+    printf("    non-black pixels  -> %u / %u (%.1f%%)\n", lit, got/4, 100.0*lit/(got/4.0));
+    printf("    %s\n", (lit > 400 && lit < 2600)
+        ? "TRIANGLE RENDERED ON THE HOST GPU" : "*** unexpected coverage ***");
+
     call(RM_OP_STATS, NULL, 0, &ru, sizeof ru, NULL);
     printf("\n  live handles on host: %llu\n", (unsigned long long)ru.value);
     close(g_fd);

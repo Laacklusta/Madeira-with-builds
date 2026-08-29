@@ -50,8 +50,28 @@ machine boundary invite non-deterministic hangs; correctness first.
     clang -fobjc-arc -O2 -o host/rmetald host/rmetald.m -framework Foundation -framework Metal
     xcrun -sdk iphoneos clang -arch arm64 -O2 -o guest/rmtest guest/rmtest.c
 
+## Offscreen render milestone — done
+
+```
+submitRenderPass  OK   4 encoder cmds in ONE round trip, 6.76 ms
+getBytes          OK   16384 bytes
+fnv1a checksum         0x31d709c5
+non-black pixels       1352 / 4096  (33.0%)
+```
+
+Coverage is geometrically exact: vertices (0,0.8) (-0.8,-0.8) (0.8,-0.8) give
+area 1.28 against a clip-space area of 4, i.e. 32%. That is a real
+rasterisation result rather than "some pixels are lit". Shaders are compiled
+from source on the host; buffer, texture, library, function, pipeline, encode,
+commit, wait and readback all cross the boundary.
+
+**Transport is not the bottleneck.** A round trip costs 0.06 ms while the whole
+render pass costs 6.76 ms, so the time is GPU execution plus the synchronous
+`waitUntilCompleted`, not the wire. Adding commands to a pass is therefore
+nearly free, which is what makes the batched design viable: a realistic frame
+of a thousand encoder commands is still one round trip.
+
 ## Next
 
-Offscreen triangle returning a pixel checksum — isolates pipeline creation,
-buffers, command serialisation, GPU execution and readback without dragging in
-windowing. Then the host window and drawable presentation.
+Host window and drawable presentation, then converting winemetal's real
+`wmtcmd_*` lists into contiguous records so DXMT can drive this path.

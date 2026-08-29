@@ -41,7 +41,55 @@ enum rm_op {
     RM_OP_RETAIN,            /* handle -> status                    */
     RM_OP_RELEASE,           /* handle -> status                    */
     RM_OP_STATS,             /* -> live handle count                */
+
+    /* --- offscreen render milestone ------------------------------------ */
+    RM_OP_NEW_COMMAND_QUEUE, /* device -> handle                          */
+    RM_OP_NEW_BUFFER,        /* device, len, [inline bytes] -> handle     */
+    RM_OP_NEW_TEXTURE,       /* device, fmt, w, h -> handle               */
+    RM_OP_NEW_LIBRARY,       /* device, [utf8 source] -> handle           */
+    RM_OP_NEW_FUNCTION,      /* library, [utf8 name] -> handle            */
+    RM_OP_NEW_RENDER_PIPELINE, /* device, vfn, ffn, fmt -> handle         */
+    RM_OP_SUBMIT_RENDER_PASS,  /* one round trip: encode, commit, wait    */
+    RM_OP_TEXTURE_GETBYTES,    /* texture -> raw pixels                   */
 };
+
+/* ---- contiguous command stream -----------------------------------------
+ *
+ * winemetal's wmtcmd_* lists are linked through GUEST POINTERS and carry
+ * further pointers for inline bytes, viewports and scissors -- none of which
+ * can cross a machine boundary. This is the shape they have to become: a
+ * self-describing contiguous byte stream where every record states its own
+ * size, and variable-length data is inline rather than referenced.
+ *
+ * Walk it with `off += rec->size`, never by following a pointer. */
+enum rm_enc {
+    RM_ENC_SET_PIPELINE = 1,   /* handle                               */
+    RM_ENC_SET_VERTEX_BUFFER,  /* handle, offset, index                */
+    RM_ENC_SET_VERTEX_BYTES,   /* index, len, inline bytes             */
+    RM_ENC_SET_VIEWPORT,       /* x, y, w, h, znear, zfar (inline)     */
+    RM_ENC_DRAW,               /* primitive, start, count              */
+};
+
+struct rm_enc_hdr { uint16_t type; uint16_t pad; uint32_t size; };   /* size covers hdr+body */
+
+struct rm_enc_pipeline { struct rm_enc_hdr h; uint64_t pipeline; };
+struct rm_enc_vbuf     { struct rm_enc_hdr h; uint64_t buffer; uint64_t offset; uint64_t index; };
+struct rm_enc_draw     { struct rm_enc_hdr h; uint64_t primitive; uint64_t start; uint64_t count; };
+struct rm_enc_viewport { struct rm_enc_hdr h; double x, y, w, h_, znear, zfar; };
+
+/* Render pass: descriptor, then `cmd_bytes` of the stream above. One round
+ * trip encodes, commits and waits -- which is where the batching win is. */
+struct rm_render_pass {
+    uint64_t queue;
+    uint64_t color_texture;
+    double   clear_r, clear_g, clear_b, clear_a;
+    uint32_t cmd_bytes;
+    uint32_t reserved;
+};
+
+struct rm_new_buffer  { uint64_t device; uint64_t length; };  /* + inline bytes */
+struct rm_new_texture { uint64_t device; uint64_t pixel_format; uint64_t width; uint64_t height; };
+struct rm_new_pipeline{ uint64_t device; uint64_t vfn; uint64_t ffn; uint64_t pixel_format; };
 
 enum rm_status {
     RM_OK = 0,
