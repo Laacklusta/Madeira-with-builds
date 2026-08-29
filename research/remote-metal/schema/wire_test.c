@@ -14,33 +14,16 @@ static int fails, checks;
 #define CHECK(c, msg) do { checks++; if (!(c)) { fails++; \
     printf("  FAIL %-46s (%s:%d)\n", msg, __FILE__, __LINE__); } } while (0)
 
-/* Walk a batch the way the host decoder must: by record size, bounded, never
- * trusting a length from the wire. */
-static int walk(const uint8_t *rec, uint32_t bytes, uint32_t sidecar_bytes,
-                uint32_t *seen, uint32_t *bad_at) {
-    uint32_t off = 0, n = 0;
-    while (off + sizeof(struct wmtw_hdr) <= bytes) {
-        const struct wmtw_hdr *h = (const void *)(rec + off);
-        if (h->version != WMTW_VERSION)               { *bad_at = n; return -1; }
-        if (h->size < sizeof *h)                      { *bad_at = n; return -2; }
-        if (off + h->size > bytes)                    { *bad_at = n; return -3; }
-        if (n >= WMTW_MAX_RECORDS)                    { *bad_at = n; return -4; }
-        /* sidecar-bearing records must reference a range inside the region */
-        if (h->op == WMTW_OP_SetFragmentBytes) {
-            const struct wmtw_setfragmentbytes *r = (const void *)h;
-            if (r->bytes_count > WMTW_MAX_SIDECAR_BYTES)          { *bad_at = n; return -5; }
-            if ((uint64_t)r->bytes_offset + r->bytes_count > sidecar_bytes) { *bad_at = n; return -6; }
-        }
-        if (h->op == WMTW_OP_SetViewports) {
-            const struct wmtw_setviewports *r = (const void *)h;
-            if (r->viewports_count > WMTW_MAX_ARRAY_COUNT)        { *bad_at = n; return -5; }
-            uint64_t need = (uint64_t)r->viewports_count * sizeof(struct wmtw_viewport);
-            if ((uint64_t)r->viewports_offset + need > sidecar_bytes) { *bad_at = n; return -6; }
-        }
-        off += h->size; n++;
-    }
-    *seen = n;
-    return (off == bytes) ? 0 : -7;
+/* No private walker here. The production validator in host/wmt_decode.h is
+ * the only implementation, so these tests exercise what rmetald actually runs
+ * -- a test that walks the stream its own way proves only that the test works.
+ */
+static enum wmtw_dec_status vcheck(const uint8_t *rec, uint32_t rec_bytes,
+                                   uint32_t count, uint32_t sidecar_bytes) {
+    struct wmtw_batch b = { WMTW_BATCH_MAGIC, WMTW_VERSION, 0,
+                            rec_bytes, count, sidecar_bytes, 0 };
+    struct wmtw_dec_result d;
+    return wmtw_validate_batch(&b, rec, 0, &d);
 }
 
 int main(void) {
@@ -82,10 +65,9 @@ int main(void) {
     ss->scissors_offset = wmtw_side_put(&p, &sc, sizeof sc);
     ss->scissors_count  = 1;
 
-    uint32_t seen = 0, bad = 0;
-    int rc = walk(recbuf, p.rec_len, p.side_len, &seen, &bad);
-    CHECK(rc == 0, "well-formed batch walks cleanly");
-    CHECK(seen == 15, "all 15 record types round-trip");
+    CHECK(vcheck(recbuf, p.rec_len, p.count, p.side_len) == WMTW_DEC_OK,
+          "well-formed batch passes the production validator");
+    CHECK(p.count == 15, "all 15 record types round-trip");
     printf("  packed %u records, %u record bytes, %u sidecar bytes\n",
            p.count, p.rec_len, p.side_len);
 
@@ -104,31 +86,31 @@ int main(void) {
     struct wmtw_hdr *h0 = (void *)bad_buf;
     uint32_t s0 = h0->size;
     h0->size = 0;                        /* size smaller than the header */
-    CHECK(walk(bad_buf, 128, 0, &seen, &bad) == -2, "zero-size record rejected");
+    CHECK(vcheck(bad_buf, 128, 99, 0) == WMTW_DEC_BAD_SIZE, "zero-size record rejected");
     h0->size = 0xffff;                   /* size past the end of the batch */
-    CHECK(walk(bad_buf, 128, 0, &seen, &bad) == -3, "oversized record rejected");
+    CHECK(vcheck(bad_buf, 128, 99, 0) == WMTW_DEC_TRUNCATED, "oversized record rejected");
     h0->size = s0;
     h0->version = 99;                    /* wrong version */
-    CHECK(walk(bad_buf, 128, 0, &seen, &bad) == -1, "version mismatch rejected");
+    CHECK(vcheck(bad_buf, 128, 99, 0) == WMTW_DEC_BAD_VERSION, "version mismatch rejected");
     h0->version = WMTW_VERSION;
 
     /* sidecar reference pointing outside the region */
     struct wmtw_setfragmentbytes evil = { { WMTW_OP_SetFragmentBytes, WMTW_VERSION, sizeof evil },
                                           0, 0, 999999 };
-    CHECK(walk((uint8_t *)&evil, sizeof evil, 16, &seen, &bad) == -5,
+    CHECK(vcheck((uint8_t *)&evil, sizeof evil, 1, 16) == WMTW_DEC_SIDECAR_RANGE,
           "oversized sidecar count rejected");
     struct wmtw_setfragmentbytes evil2 = { { WMTW_OP_SetFragmentBytes, WMTW_VERSION, sizeof evil2 },
                                            0, 8, 100 };
-    CHECK(walk((uint8_t *)&evil2, sizeof evil2, 16, &seen, &bad) == -6,
+    CHECK(vcheck((uint8_t *)&evil2, sizeof evil2, 1, 16) == WMTW_DEC_SIDECAR_RANGE,
           "sidecar range past region rejected");
     /* integer overflow in offset+count must not wrap into acceptance */
     struct wmtw_setfragmentbytes evil3 = { { WMTW_OP_SetFragmentBytes, WMTW_VERSION, sizeof evil3 },
                                            0, 0xfffffff0u, 64 };
-    CHECK(walk((uint8_t *)&evil3, sizeof evil3, 16, &seen, &bad) < 0,
+    CHECK(vcheck((uint8_t *)&evil3, sizeof evil3, 1, 16) != WMTW_DEC_OK,
           "offset+count overflow rejected");
 
     /* trailing garbage: a batch whose records do not exactly fill it */
-    CHECK(walk(recbuf, p.rec_len - 3, p.side_len, &seen, &bad) != 0,
+    CHECK(vcheck(recbuf, p.rec_len - 3, p.count, p.side_len) != WMTW_DEC_OK,
           "truncated batch rejected");
 
     /* --- decoder-side validation, the half that faces the wire --- */

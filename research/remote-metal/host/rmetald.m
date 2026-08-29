@@ -353,8 +353,21 @@ static void serve(int fd) {
              * stack garbage here, and resolving it silently fails the whole
              * pass with a confusing STALE_HANDLE. Validate it as a handle only
              * when non-zero, and say which field was wrong. */
-            if (h.payload_len < sizeof *a ||
-                a->cmd_bytes > h.payload_len - sizeof *a) {   /* stream must fit the frame */
+            /* Two different failures, and only one of them can give the
+             * drawable back. If the frame is too short to even contain the
+             * struct, present_drawable cannot be READ -- reading it would be
+             * an out-of-bounds access on attacker-controlled input -- so the
+             * drawable is stranded and the guest must recover it with
+             * RM_OP_DISCARD_DRAWABLE. If the struct is present but cmd_bytes
+             * is wrong, the handle is readable and must be consumed. */
+            if (h.payload_len < sizeof *a) {
+                fprintf(stderr, "[rmetald] render pass frame too short (%u < %zu); "
+                        "any acquired drawable must be returned with DISCARD_DRAWABLE\n",
+                        h.payload_len, sizeof *a);
+                reply(fd,&h,RM_ERR_SHORT_PAYLOAD,NULL,0); break;
+            }
+            if (a->cmd_bytes > h.payload_len - sizeof *a) {   /* stream must fit the frame */
+                rm_consume_drawable(a->present_drawable);
                 reply(fd,&h,RM_ERR_SHORT_PAYLOAD,NULL,0); break;
             }
             /* From here on, any early return must give the drawable back. */
