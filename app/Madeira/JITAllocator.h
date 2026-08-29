@@ -74,6 +74,14 @@ int64_t jit_test_execute(void);
 // Returns 42 on success, -1 on failure, -2 if no debugger, -3 if fault loop.
 int64_t jit_test_execute_strategy2(void);
 
+/// ml748: W^X A/B probe. Reports whether PROT_WRITE survives on FILE-BACKED
+/// mappings, which is what the ARM64EC loader needs when it patches an image's
+/// .rdata. Run the same build on the research VM and on hardware and compare:
+/// if hardware keeps W and the VM strips it, the VM is stricter and the failure
+/// is local to it; if both strip it, the loader's reliance on RWX over image
+/// pages is a real portability bug. Call after JIT is enabled.
+void jit_wx_probe(void);
+
 // Log callback type
 typedef void (*jit_log_callback_t)(const char *message);
 

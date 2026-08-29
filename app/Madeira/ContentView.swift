@@ -1438,6 +1438,33 @@ struct ContentView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(.mint)
 
+                // ml741: Stray (UE4). Launch the shipping binary DIRECTLY rather
+                // than Stray.exe -- the launcher builds its child's command line
+                // itself and passed only "Hk_project", so Unreal picked its
+                // default RHI. That default is DX12 for this title and we only
+                // implement D3D11, which is why the first run sat on an
+                // unsignalled event for 97s at startup instead of failing loudly.
+                //
+                // Args are overridable at runtime from Documents/madeira-args.txt
+                // so UE4 flags can be tried without a rebuild; the string below is
+                // the default when that file is absent.
+                Button("Stray (UE4, -dx11)") {
+                    setenv("MADEIRA_EXE",
+                           "C:\\Program Files\\Stray\\Hk_project\\Binaries\\Win64\\Stray-Win64-Shipping.exe", 1)
+                    var args = "Hk_project -dx11 -windowed"
+                    if let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+                       let txt = try? String(contentsOf: d.appendingPathComponent("madeira-args.txt"), encoding: .utf8) {
+                        let v = txt.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !v.isEmpty { args = v }
+                    }
+                    setenv("MADEIRA_ARGS", args, 1)
+                    unsetenv("MADEIRA_DESKTOP")
+                    logStore.log("Stray: args = \(args)")
+                    runWineFullSequence()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.orange)
+
                 Button("Thumper (standalone)") {
                     // Game lives at Documents/wine/drive_c/Program Files/Thumper/
                     // (push via scripts/deploy-thumper.sh during development;
@@ -1874,6 +1901,21 @@ struct ContentView: View {
                 }
             }
 
+            // ml744: DXMT options passthrough. Documents/madeira-dxmt.txt is copied
+            // verbatim into DXMT_CONFIG, which the renderer's config parser reads as
+            // inline "key=value" lines, so options can be tried without a rebuild.
+            // d3d11.mipClampBC=N is the one that matters for memory: this GPU cannot
+            // sample BC, so those textures are expanded to uncompressed and cost 2-8x
+            // their shipped size.
+            if let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+               let txt = try? String(contentsOf: d.appendingPathComponent("madeira-dxmt.txt"), encoding: .utf8) {
+                let v = txt.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !v.isEmpty {
+                    setenv("DXMT_CONFIG", v, 1)
+                    logStore.log("DXMT config: \(v) via madeira-dxmt.txt")
+                }
+            }
+
             // ml734: Theorafile call tracer. Documents/madeira-tf-trace.txt == "1"
             // redirects libtheorafile's tf_* exports through wrappers in
             // tftrace-x64.dll that call the original and report the RETURN
@@ -1955,6 +1997,38 @@ struct ContentView: View {
             let elapsed = CFAbsoluteTimeGetCurrent() - t0
             winios_phase("pool-ready")
             logStore.log("BRK suspension lasted \(String(format: "%.2f", elapsed))s")
+
+            // ml757: FEX arena placeholder. Documents/madeira-arena.txt == "1"
+            // makes Wine reserve FEX's host arena before any PE loads. OFF by
+            // default: FEX still selects its own band, and on hardware that
+            // band IS the reservation, so enabling it starves FEX and kills
+            // x64 before the first window. Proven correct on the research VM
+            // (8GB held, 0 of 123 guest images inside it) -- turn on only once
+            // FEX consumes WINE_IOS_FEX_ARENA_BASE/SIZE instead of choosing.
+            if let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+               let txt = try? String(contentsOf: d.appendingPathComponent("madeira-arena.txt"), encoding: .utf8) {
+                let v = txt.trimmingCharacters(in: .whitespacesAndNewlines)
+                setenv("MADEIRA_FEX_ARENA", v, 1)
+                logStore.log("FEX arena placeholder: MADEIRA_FEX_ARENA=\(v) via madeira-arena.txt")
+            }
+
+            // ml748: W^X A/B probe. Documents/madeira-wxprobe.txt == "1" runs it.
+            // Loading xtajit64.dll faults writing its .rdata on the jailbroken
+            // research VM and not on this phone, with CS_DEBUGGED live in both,
+            // so attachment is not the variable. Either the VM is stricter than
+            // real hardware (its patchVmMapProtect() was removed, and that is
+            // what forces W to stick on file-backed pages), or hardware masks a
+            // genuine bug and the loader must stop holding RWX over image pages.
+            // Reasoning cannot separate those; the SAME build reporting on both
+            // machines can. Runs here because it needs the real container, the
+            // real sandbox and a live cs_wx_enabled map -- a standalone binary
+            // over SSH already answered this wrongly once.
+            if let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+               let txt = try? String(contentsOf: d.appendingPathComponent("madeira-wxprobe.txt"), encoding: .utf8),
+               txt.trimmingCharacters(in: .whitespacesAndNewlines) == "1" {
+                logStore.log("W^X probe armed via madeira-wxprobe.txt", level: .success)
+                jit_wx_probe()
+            }
 
             if let pool = pool {
                 logStore.log("JIT pool: RX=\(String(format: "%p", Int(bitPattern: pool.rx))), RW=\(String(format: "%p", Int(bitPattern: pool.rw))), size=\(pool.size / 1024 / 1024)MB", level: .success)

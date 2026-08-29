@@ -10,6 +10,9 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <signal.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <mach-o/dyld.h>
 #include <os/log.h>
 
 // csops syscall - used to check CS_DEBUGGED flag
@@ -20,6 +23,16 @@
 #define CS_OPS_STATUS 0
 #endif
 extern int csops(pid_t pid, unsigned int ops, void *useraddr, size_t usersize);
+
+/* ml748: <mach/mach_vm.h> is "unsupported" on the iOS SDK, but these are
+ * exported by libsystem_kernel and are the only calls that report a region's
+ * max_protection -- which the W^X probe needs, since the failure mode is a
+ * successful-looking call whose W was silently stripped. */
+extern kern_return_t mach_vm_region(vm_map_t, mach_vm_address_t *, mach_vm_size_t *,
+                                    vm_region_flavor_t, vm_region_info_t,
+                                    mach_msg_type_number_t *, mach_port_t *);
+extern kern_return_t mach_vm_protect(vm_map_t, mach_vm_address_t, mach_vm_size_t,
+                                     boolean_t, vm_prot_t);
 
 // Page size on iOS is 16KB
 #define JIT_PAGE_SIZE 0x4000
@@ -699,4 +712,123 @@ int64_t jit_test_execute_strategy2(void) {
 
     jit_log("=== All JIT strategies failed ===");
     return result;
+}
+
+/* ============================================================================
+ * ml748 -- W^X A/B PROBE: does PROT_WRITE survive on FILE-BACKED image pages?
+ *
+ * Loading xtajit64.dll on the jailbroken research VM faults writing its .rdata
+ * (off=0x207000, kr=2 PROTECTION_FAILURE, prot=1 max=7) during the ARM64EC
+ * hybrid-metadata / TLS-index fixups. The identical build loads it fine on the
+ * iPhone 13 Pro. The fault reproduced with the debugger FULLY ATTACHED, so
+ * CS_DEBUGGED being live is not the variable.
+ *
+ * Two explanations remain and reasoning cannot separate them:
+ *   (a) the VM is STRICTER than a real CS_DEBUGGED device, because its
+ *       patchVmMapProtect() was removed and that patch is what forced W to
+ *       stick on file-backed pages. Then hardware keeps W, the VM strips it,
+ *       and this is a false failure local to the VM.
+ *   (b) hardware masks a GENUINE portability bug some other way, both strip W,
+ *       and the loader's reliance on holding RWX over image pages is wrong.
+ *
+ * Run the SAME binary in BOTH places and compare. This must live inside
+ * Madeira, not in a standalone tool: the 13 Pro has no root, so an arbitrary
+ * CLI cannot run there at all, and a platform binary over SSH already gave a
+ * misleading answer once (it reported mprotect(RWX) succeeding while Madeira in
+ * its real container saw the opposite). Same process, same sandbox, same
+ * cs_wx_enabled map, or it proves nothing.
+ *
+ * THE READBACK IS THE ANSWER, NOT THE RETURN CODE. The failure signature is a
+ * call that reports success while W is silently stripped, so every case reads
+ * protection AND max_protection back via mach_vm_region.
+ * ==========================================================================*/
+
+static void wxprobe_readback(const char *tag, void *addr, int rc, int err) {
+    mach_vm_address_t a = (mach_vm_address_t)(uintptr_t)addr;
+    mach_vm_size_t sz = 0;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t obj = MACH_PORT_NULL;
+    kern_return_t kr = mach_vm_region(mach_task_self(), &a, &sz,
+                                      VM_REGION_BASIC_INFO_64,
+                                      (vm_region_info_t)&info, &cnt, &obj);
+    if (kr != KERN_SUCCESS) {
+        jit_log("[wx-probe] ml748 %-22s rc=%d errno=%d  region=UNREADABLE kr=%d",
+                tag, rc, err, kr);
+        return;
+    }
+    /* W_KEPT is the whole verdict: the call may have returned 0 and still lost W. */
+    jit_log("[wx-probe] ml748 %-22s rc=%d errno=%-3d prot=%d max=%d  [R=%d W=%d X=%d]  W_KEPT=%s",
+            tag, rc, err, info.protection, info.max_protection,
+            !!(info.protection & VM_PROT_READ),
+            !!(info.protection & VM_PROT_WRITE),
+            !!(info.protection & VM_PROT_EXECUTE),
+            (info.protection & VM_PROT_WRITE) ? "YES" : "NO");
+}
+
+void jit_wx_probe(void) {
+    const size_t len = JIT_PAGE_SIZE * 4;
+
+    jit_log("[wx-probe] ml748 BEGIN  CS_DEBUGGED=%d pagesize=%d",
+            (int)jit_check_debugged(), (int)JIT_PAGE_SIZE);
+
+    /* A file-backed PRIVATE mapping is the shape that actually fails: PE images
+     * are mapped from the container, not allocated anonymously. Map our own
+     * executable -- guaranteed present and readable in both environments. */
+    const char *self = "/proc/self/exe";
+    int fd = open(self, O_RDONLY);
+    if (fd < 0) {
+        /* No procfs on iOS; any readable file in the bundle serves the purpose. */
+        extern int _NSGetExecutablePath(char *, uint32_t *);
+        char path[4096]; uint32_t psz = sizeof(path);
+        if (_NSGetExecutablePath(path, &psz) == 0)
+            fd = open(path, O_RDONLY);
+    }
+    if (fd < 0) {
+        jit_log("[wx-probe] ml748 ABORT: no file to map (errno=%d)", errno);
+        return;
+    }
+
+    /* --- Cases 1-3: FILE-BACKED. This is the shape that faults. --- */
+    for (int c = 1; c <= 3; c++) {
+        void *p = mmap(NULL, len, PROT_READ, MAP_PRIVATE | MAP_FILE, fd, 0);
+        if (p == MAP_FAILED) {
+            jit_log("[wx-probe] ml748 case%d mmap FAILED errno=%d", c, errno);
+            continue;
+        }
+        int rc, err;
+        if (c == 1) {
+            rc = mprotect(p, len, PROT_READ | PROT_WRITE); err = errno;
+            wxprobe_readback("1 file mprotect RW", p, rc, err);
+        } else if (c == 2) {
+            /* Exactly what the loader does today. */
+            rc = mprotect(p, len, PROT_READ | PROT_WRITE | PROT_EXEC); err = errno;
+            wxprobe_readback("2 file mprotect RWX", p, rc, err);
+        } else {
+            /* VM_PROT_COPY forces a private writable copy of a file-backed page
+             * instead of asking to write through the shared mapping -- the
+             * mechanism the RW-window fix would rely on, and the one that should
+             * remain legal under an ENFORCING W^X. */
+            kern_return_t kr = mach_vm_protect(mach_task_self(),
+                                               (mach_vm_address_t)(uintptr_t)p, len, FALSE,
+                                               VM_PROT_COPY | VM_PROT_READ | VM_PROT_WRITE);
+            wxprobe_readback("3 file vm_protect COPY", p, (int)kr, 0);
+        }
+        munmap(p, len);
+    }
+    close(fd);
+
+    /* --- Case 4: ANONYMOUS control. If anon keeps W|X and file-backed does not,
+     * the constraint is file backing, not W^X in general. --- */
+    void *a = mmap(NULL, len, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (a != MAP_FAILED) {
+        int rc = mprotect(a, len, PROT_READ | PROT_WRITE | PROT_EXEC);
+        wxprobe_readback("4 anon mprotect RWX", a, rc, errno);
+        munmap(a, len);
+    } else {
+        jit_log("[wx-probe] ml748 case4 anon mmap FAILED errno=%d", errno);
+    }
+
+    jit_log("[wx-probe] ml748 END");
 }
