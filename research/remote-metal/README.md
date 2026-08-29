@@ -127,3 +127,38 @@ was 0. Minimise/close/reopen are likewise untested.
 
 Convert winemetal's real `wmtcmd_*` lists into validated contiguous records,
 then point winemetal at this backend and drive it with the ARM64 D3D11 cube.
+
+## Command serialisation
+
+`schema/wire_schema.py` is the single source of truth. It generates
+`wmt_wire.h`, which both sides include, with `_Static_assert` on every record
+layout — a change only one side picked up fails to compile rather than
+corrupting pixels a machine away.
+
+```
+schema/wire_schema.py   -> wmt_wire.h        record layouts, opcodes, limits
+wmt_pack.h                                    packer scaffolding, sidecar cursor
+../dxmt/.../wmt_remote_pack.h                 wmtcmd_* -> wire, all 15 opcodes
+host/wmt_decode.h                             validation facing the wire
+schema/wire_test.c                            63 checks, run before DXMT sees it
+```
+
+Scope is the 15 render opcodes an ARM64 D3D11 cube actually emits, measured:
+28,800 records over 12,288 batches, **zero compute, zero blit**.
+
+⚠️ The cube's maxima are **not** baked into the ABI. It used at most 12 bytes of
+inline `setBytes`, one viewport and one scissor — but sidecars are
+`offset + length` and arrays are `offset + count`, with separate negotiated
+limits. A heavier title needs new opcode implementations, never a redesign.
+
+Guarantees the tests actually exercise:
+
+- Every record type round-trips; sidecar bytes and viewports survive byte-for-byte.
+- Malformed input is rejected: zero-size and oversized records, version
+  mismatch, out-of-range counts, ranges past the region, **`offset+count`
+  integer overflow**, and truncated batches.
+- The packer walks the guest's pointer-linked list under a hard record cap
+  **and a Floyd cycle check** — a corrupt `next` chain would otherwise spin
+  forever, which is the shape the FEX IR list corruption took.
+- Unsupported and unimplemented opcodes fail by name, carrying encoder kind,
+  opcode and record index.

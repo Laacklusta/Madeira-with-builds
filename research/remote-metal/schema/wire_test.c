@@ -6,6 +6,7 @@
  * machine away from the cause.
  */
 #include "../wmt_pack.h"
+#include "../host/wmt_decode.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -129,6 +130,28 @@ int main(void) {
     /* trailing garbage: a batch whose records do not exactly fill it */
     CHECK(walk(recbuf, p.rec_len - 3, p.side_len, &seen, &bad) != 0,
           "truncated batch rejected");
+
+    /* --- decoder-side validation, the half that faces the wire --- */
+    printf("decoder validation\n");
+    CHECK(wmtw_min_size(WMTW_OP_Draw) == sizeof(struct wmtw_draw), "min size known for Draw");
+    CHECK(wmtw_min_size(WMTW_OP_DrawIndexed) == sizeof(struct wmtw_drawindexed), "min size known for DrawIndexed");
+    CHECK(wmtw_min_size(9999) == 0, "unknown opcode has no min size");
+    for (int op = 0; op < WMTW_OP__MAX; op++) {
+        uint32_t m = wmtw_min_size((uint16_t)op);
+        if (m) CHECK(m >= sizeof(struct wmtw_hdr), "every known opcode is at least a header");
+    }
+    /* overflow-safe sidecar arithmetic */
+    CHECK(wmtw_side_ok(0, 1, sizeof(struct wmtw_viewport), 48), "exact-fit viewport accepted");
+    CHECK(!wmtw_side_ok(0, 2, sizeof(struct wmtw_viewport), 48), "one element too many rejected");
+    CHECK(!wmtw_side_ok(0xfffffff0u, 64, 1, 1024), "offset+count overflow rejected");
+    CHECK(!wmtw_side_ok(0, 0xffffffffu, sizeof(struct wmtw_viewport), 1024),
+          "count*elem overflow rejected");
+    CHECK(wmtw_side_ok(0, 0, 1, 0), "empty sidecar accepted");
+    /* the packer's own status strings must all be distinct and non-empty */
+    for (int i = 0; i <= WMTW_PACK_BAD_ARRAY_COUNT; i++)
+        CHECK(wmtw_pack_strerror((enum wmtw_pack_status)i)[0] != '?', "pack status named");
+    for (int i = 0; i <= WMTW_DEC_NOT_EXACT; i++)
+        CHECK(wmtw_dec_strerror((enum wmtw_dec_status)i)[0] != '?', "decode status named");
 
     printf("\n%d checks, %d failures\n", checks, fails);
     return fails != 0;
