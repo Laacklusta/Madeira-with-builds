@@ -55,6 +55,7 @@ enum rm_op {
     /* --- presentation ------------------------------------------------- */
     RM_OP_NEXT_DRAWABLE,       /* -> drawable+texture, or RM_ERR_NO_DRAWABLE */
     RM_OP_LAYER_SIZE,          /* -> current host layer size                 */
+    RM_OP_DISCARD_DRAWABLE,    /* acquired but never submitted -- give it back */
 };
 
 struct rm_ret_drawable { uint64_t drawable; uint64_t texture; uint64_t width; uint64_t height; };

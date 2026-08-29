@@ -75,6 +75,38 @@ static uint32_t rm_release_handle(uint64_t h) {
     return RM_OK;
 }
 
+/* ---- drawable pairing --------------------------------------------------
+ *
+ * NEXT_DRAWABLE interns TWO handles, and both must die together. Deriving the
+ * pairing later -- by trusting the caller's color_texture, or by scanning the
+ * table for the texture object -- is wrong on exactly the paths that matter:
+ * a malformed stream would release whatever texture the caller named, and a
+ * drawable/texture mismatch would release the drawable while stranding its
+ * real texture handle. Record the truth at acquisition instead, and route
+ * every terminal path through one consume helper. */
+#define RM_MAX_DRAWABLES 8
+static struct { uint64_t drawable, texture; } g_pairs[RM_MAX_DRAWABLES];
+
+static void rm_pair_record(uint64_t d, uint64_t t) {
+    for (int i = 0; i < RM_MAX_DRAWABLES; i++)
+        if (!g_pairs[i].drawable) { g_pairs[i].drawable = d; g_pairs[i].texture = t; return; }
+    fprintf(stderr, "[rmetald] drawable pair table full -- leaking %llu\n",
+            (unsigned long long)d);
+}
+
+/* Release a drawable and its texture together. Safe to call on any terminal
+ * path, including ones where the drawable was never presented. */
+static void rm_consume_drawable(uint64_t d) {
+    if (!d) return;
+    for (int i = 0; i < RM_MAX_DRAWABLES; i++)
+        if (g_pairs[i].drawable == d) {
+            rm_release_handle(g_pairs[i].texture);
+            g_pairs[i].drawable = g_pairs[i].texture = 0;
+            break;
+        }
+    rm_release_handle(d);
+}
+
 /* ---- host window ------------------------------------------------------
  *
  * AppKit owns the main thread; RPC runs on a worker. Every window and layer
@@ -143,6 +175,7 @@ static void rm_reset_table(void) {
             g_slots[i].generation++;
         }
     g_live = 0;
+    memset(g_pairs, 0, sizeof g_pairs);
 }
 
 /* Resource uploads are megabytes, not kilobytes. A fixed 64KB payload buffer
@@ -324,9 +357,13 @@ static void serve(int fd) {
                 a->cmd_bytes > h.payload_len - sizeof *a) {   /* stream must fit the frame */
                 reply(fd,&h,RM_ERR_SHORT_PAYLOAD,NULL,0); break;
             }
-            uint32_t err2 = RM_OK;
-            id q = rm_resolve(a->queue, &err);          if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
-            id tex = rm_resolve(a->color_texture, &err); if (err != RM_OK) { reply(fd,&h,err,NULL,0); break; }
+            /* From here on, any early return must give the drawable back. */
+            id q = rm_resolve(a->queue, &err);
+            if (err != RM_OK) { rm_consume_drawable(a->present_drawable);
+                                reply(fd,&h,err,NULL,0); break; }
+            id tex = rm_resolve(a->color_texture, &err);
+            if (err != RM_OK) { rm_consume_drawable(a->present_drawable);
+                                reply(fd,&h,err,NULL,0); break; }
             MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
             rp.colorAttachments[0].texture = tex;
             rp.colorAttachments[0].loadAction = MTLLoadActionClear;
@@ -385,10 +422,7 @@ static void serve(int fd) {
                 /* A malformed command stream must not strand the drawable: it
                  * is single-use, and leaking one per failed frame exhausts the
                  * pool and then blocks acquisition forever. */
-                if (a->present_drawable) {
-                    rm_release_handle(a->color_texture);
-                    rm_release_handle(a->present_drawable);
-                }
+                rm_consume_drawable(a->present_drawable);
                 reply(fd, &h, err ? err : RM_ERR_BAD_OPCODE, NULL, 0); break;
             }
             /* Present on THIS command buffer, before commit -- Metal's
@@ -400,9 +434,11 @@ static void serve(int fd) {
                  * a drawable whose texture was never drawn shows a stale or
                  * blank frame, which looks like a renderer bug rather than a
                  * protocol misuse. */
-                if (err == RM_OK && d && tex != [(id<CAMetalDrawable>)d texture]) {
+                if (err != RM_OK) { rm_consume_drawable(a->present_drawable);
+                                    reply(fd,&h,err,NULL,0); break; }
+                if (d && tex != [(id<CAMetalDrawable>)d texture]) {
                     fprintf(stderr, "[rmetald] color_texture is not the drawable's texture\n");
-                    rm_release_handle(a->present_drawable);   /* do not strand it */
+                    rm_consume_drawable(a->present_drawable);
                     reply(fd, &h, RM_ERR_WRONG_CLASS, NULL, 0); break;
                 }
                 if (err != RM_OK) {
@@ -420,16 +456,7 @@ static void serve(int fd) {
              * the drawable leaked one texture handle per frame, which a 600
              * frame run made obvious (611 live handles). The texture belongs
              * to the drawable, so its handle dies with it. */
-            if (a->present_drawable) {
-                /* Consume exactly the two handles this frame acquired. The
-                 * earlier version scanned the whole table for the texture
-                 * object, which is O(handles) per frame and would match the
-                 * wrong slot if the same texture were interned twice. The
-                 * caller already told us which texture it rendered into, and
-                 * it was validated against the drawable above. */
-                rm_release_handle(a->color_texture);
-                rm_release_handle(a->present_drawable);
-            }
+            rm_consume_drawable(a->present_drawable);
             struct rm_ret_u64 r = { (uint64_t)[cb status] };
             reply(fd, &h, RM_OK, &r, sizeof r); break;
         }
@@ -457,9 +484,16 @@ static void serve(int fd) {
             });
             id<CAMetalDrawable> d = [g_layer nextDrawable];
             if (!d) { reply(fd, &h, RM_ERR_NO_DRAWABLE, NULL, 0); break; }
-            struct rm_ret_drawable r = { rm_intern(d), rm_intern(d.texture),
-                                         (uint64_t)sz.width, (uint64_t)sz.height };
+            uint64_t dh = rm_intern(d), th = rm_intern(d.texture);
+            rm_pair_record(dh, th);
+            struct rm_ret_drawable r = { dh, th, (uint64_t)sz.width, (uint64_t)sz.height };
             reply(fd, &h, RM_OK, &r, sizeof r); break;
+        }
+        case RM_OP_DISCARD_DRAWABLE: {
+            /* Acquired but never submitted. Without this the guest has no way
+             * to give a drawable back, and the single-use pool drains. */
+            rm_consume_drawable(((struct rm_arg_handle *)payload)->handle);
+            reply(fd, &h, RM_OK, NULL, 0); break;
         }
         case RM_OP_TEXTURE_GETBYTES: {
             id o = rm_resolve(((struct rm_arg_handle *)payload)->handle, &err);
