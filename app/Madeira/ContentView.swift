@@ -1998,6 +1998,20 @@ struct ContentView: View {
             winios_phase("pool-ready")
             logStore.log("BRK suspension lasted \(String(format: "%.2f", elapsed))s")
 
+            // ml761: top-level API census. Documents/madeira-apicensus.txt == "1"
+            // counts every call across the PE->unix winemetal boundary and
+            // classifies each as producer, consumer, lifetime, query, sync,
+            // presentation or bulk-memory. Needed because a packed command
+            // batch carries GUEST handles -- raw pointer casts, meaningless on
+            // another machine -- so every handle producer and consumer has to
+            // be redirected together.
+            if let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+               let txt = try? String(contentsOf: d.appendingPathComponent("madeira-apicensus.txt"), encoding: .utf8) {
+                let v = txt.trimmingCharacters(in: .whitespacesAndNewlines)
+                setenv("DXMT_API_CENSUS", v, 1)
+                logStore.log("API census: DXMT_API_CENSUS=\(v) via madeira-apicensus.txt")
+            }
+
             // ml760: shadow-pack mode. Documents/madeira-shadow.txt == "1" packs
             // and validates every real render batch into the remote wire format,
             // then discards it and renders locally as normal. Exercises the

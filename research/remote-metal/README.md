@@ -151,6 +151,12 @@ inline `setBytes`, one viewport and one scissor — but sidecars are
 `offset + length` and arrays are `offset + count`, with separate negotiated
 limits. A heavier title needs new opcode implementations, never a redesign.
 
+**88 checks across both suites**, run before DXMT sees any of it. `pack_test`
+exists because an earlier 63-check suite was green while the packer's cycle
+detector reported *every* list of two or more nodes as cyclic -- the tests used
+a private walker and never called the real function. Tests must drive the
+production code.
+
 Guarantees the tests actually exercise:
 
 - Every record type round-trips; sidecar bytes and viewports survive byte-for-byte.

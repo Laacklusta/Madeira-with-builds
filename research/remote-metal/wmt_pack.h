@@ -71,9 +71,17 @@ static inline uint32_t wmtw_side_put(struct wmtw_packer *p, const void *data, ui
     /* 8-byte align. Viewports and scissors are cast straight to Metal structs
      * on replay, and a misaligned load of a double is undefined. Aligning here
      * costs at most 7 bytes per entry and removes a whole class of
-     * platform-dependent failure. */
-    p->side_len = (p->side_len + 7u) & ~7u;
-    if (bytes > WMTW_MAX_SIDECAR_BYTES || p->side_len + bytes > p->side_cap) return 0xffffffffu;
+     * platform-dependent failure.
+     *
+     * ZERO the padding. The buffer is reused across batches, so skipped bytes
+     * would otherwise still hold data from an earlier batch and be transmitted
+     * as part of the sidecar region -- stale guest data on the wire, and a
+     * payload that differs run to run for identical input. */
+    uint32_t aligned = (p->side_len + 7u) & ~7u;
+    if (aligned > p->side_cap) return 0xffffffffu;      /* check before writing */
+    if (aligned > p->side_len) memset(p->side + p->side_len, 0, aligned - p->side_len);
+    p->side_len = aligned;
+    if (bytes > WMTW_MAX_SIDECAR_BYTES || bytes > p->side_cap - p->side_len) return 0xffffffffu;
     uint32_t off = p->side_len;
     memcpy(p->side + off, data, bytes);
     p->side_len += bytes;
