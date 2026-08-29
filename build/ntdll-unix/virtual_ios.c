@@ -14861,10 +14861,24 @@ static NTSTATUS get_extended_params( const MEM_EXTENDED_PARAMETER *parameters, U
 void ios_reserve_fex_arena(void)
 {
     static int done;
+    /* Several windows, largest first.
+     *
+     * The research VM's usable VA windows MOVE between launches, so a single
+     * candidate is a coin flip: roughly half the launches ended with NO ARENA,
+     * and every one of those died in FEX before its own logging init. A 4GB
+     * reservation has been observed to work, so smaller is worth trying before
+     * giving up -- the failure mode that matters is reserving NOTHING.
+     * The VM's ceiling is 63GiB, so nothing above that can ever succeed. */
     static const struct { ULONG_PTR lo, hi; SIZE_T size; const char *what; } plan[] = {
-        { 0x7c00000000ull, 0x7fffffffffull, 0x400000000ull, "hardware high band 16GB" },
-        { 0x0800000000ull, 0x0fffffffffull, 0x200000000ull, "constrained 8GB"         },
-        { 0x0800000000ull, 0x0fffffffffull, 0x100000000ull, "constrained 4GB LIMITED" },
+        { 0x7c00000000ull, 0x7fffffffffull, 0x400000000ull, "hardware high band 16GB"  },
+        { 0x0800000000ull, 0x0fffffffffull, 0x200000000ull, "constrained 8GB"          },
+        { 0x0400000000ull, 0x07ffffffffull, 0x200000000ull, "8GB @16-32G"              },
+        { 0x0200000000ull, 0x03ffffffffull, 0x200000000ull, "8GB @8-16G"               },
+        { 0x0800000000ull, 0x0bffffffffull, 0x100000000ull, "4GB @32-48G"              },
+        { 0x0c00000000ull, 0x0fbfffffffull, 0x100000000ull, "4GB @48-63G"              },
+        { 0x0400000000ull, 0x07ffffffffull, 0x100000000ull, "4GB @16-32G"              },
+        { 0x0200000000ull, 0x03ffffffffull, 0x100000000ull, "4GB @8-16G"               },
+        { 0x0200000000ull, 0x0fbfffffffull, 0x080000000ull, "2GB anywhere low"         },
     };
     unsigned i;
 
@@ -14932,14 +14946,20 @@ void ios_reserve_fex_arena(void)
         dprintf( 2, "[fex-arena] ml756 RESERVED %s base=%p size=0x%llx -- placeholder held for "
                     "process lifetime; guest images are excluded from it\n",
                  plan[i].what, base, (unsigned long long)size );
-        if (i == 2)
-            dprintf( 2, "[fex-arena] ml756 WARNING: only 4GB. Sufficient for small guests; "
-                        "heavy titles are expected to exhaust it.\n" );
+        if (size < 0x200000000ull)
+            dprintf( 2, "[fex-arena] ml774 WARNING: only 0x%llx bytes. Sufficient for small "
+                        "guests; heavy titles are expected to exhaust it.\n",
+                     (unsigned long long)size );
         return;
     }
 
-    dprintf( 2, "[fex-arena] ml756 NO ARENA RESERVED -- falling back to FEX's own band "
-                "selection (unreliable). x64 guests may fail to start.\n" );
+    /* Every candidate failed. On the VM this reliably means the launch is dead:
+     * FEX picks its own band and dies before its first log line. Say so in the
+     * terms the operator needs -- relaunch, do not read anything into it. */
+    dprintf( 2, "[fex-arena] ml774 NO ARENA RESERVED after %u candidates -- FEX will select "
+                "its own band. On the research VM this launch is EXPECTED TO DIE before "
+                "FEX initialises; relaunch rather than diagnosing it.\n",
+             (unsigned)ARRAY_SIZE(plan) );
 }
 
 NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *size_ptr, ULONG type,
