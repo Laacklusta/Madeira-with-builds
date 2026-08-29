@@ -15,6 +15,8 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <errno.h>
+#include <math.h>
+#include <stdatomic.h>
 #include <objc/runtime.h>
 #include "../protocol.h"
 #include "wmt_decode.h"
@@ -192,6 +194,9 @@ static double g_guest_w, g_guest_h;
  * draws is a blank frame by definition, which turns "it flickers" into a
  * number instead of a theory. */
 static unsigned long g_draws_since_present;
+/* Presents, for the title-bar FPS readout. Written by the RPC thread and read
+ * by a timer on the main thread, so it is atomic. */
+static _Atomic unsigned long long g_present_count;
 
 static void host_window_build(id<MTLDevice> dev) {
         NSRect r = NSMakeRect(120, 120, 640, 480);
@@ -399,6 +404,71 @@ static int rm_replay_into(id<MTLRenderCommandEncoder> enc, struct wmtw_view v) {
                 off += r->size; replayed++;
             }
     return bad ? -1 : (int)replayed;
+}
+
+/* Title-bar FPS, computed the SAME way as the guest's overlay so the two
+ * readouts can be compared directly rather than argued about:
+ *
+ *   - sample the present counter every 100ms into a 5s ring (50 entries)
+ *   - every 250ms, walk back from the newest sample until the window holds
+ *     >=3 presents AND spans >=1s, then fps = presents / seconds
+ *
+ * The >=1s minimum is load bearing. With 100ms sampling a short window
+ * quantises the readout to multiples of 5 -- a true ~19 FPS reads as a rock
+ * steady "20.0" with dips to 15.0, which looks like a frame lock that is not
+ * there. One second gives 1-FPS resolution and is still responsive. */
+#define RM_FPS_SAMPLES 50
+
+static void rm_start_fps_title(void) {
+    static double t_ring[RM_FPS_SAMPLES];
+    static unsigned long long c_ring[RM_FPS_SAMPLES];
+    static unsigned n_ring;                 /* total samples ever taken */
+    __block double last_shown = -1.0;
+
+    /* STATIC: under ARC a local dispatch_source_t is released when this
+     * function returns, which cancels the timer before it ever fires -- the
+     * title simply never changed. */
+    static dispatch_source_t sampler;
+    sampler =
+        dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(sampler, DISPATCH_TIME_NOW, 100ull * NSEC_PER_MSEC, 10ull * NSEC_PER_MSEC);
+    dispatch_source_set_event_handler(sampler, ^{
+        unsigned idx = n_ring % RM_FPS_SAMPLES;
+        t_ring[idx] = CFAbsoluteTimeGetCurrent();
+        c_ring[idx] = atomic_load(&g_present_count);
+        n_ring++;
+    });
+    dispatch_resume(sampler);
+
+    static dispatch_source_t shower;
+    shower =
+        dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(shower, DISPATCH_TIME_NOW, 250ull * NSEC_PER_MSEC, 25ull * NSEC_PER_MSEC);
+    dispatch_source_set_event_handler(shower, ^{
+        if (n_ring < 2) return;
+        unsigned have = n_ring < RM_FPS_SAMPLES ? n_ring : RM_FPS_SAMPLES;
+        unsigned newest = (n_ring - 1) % RM_FPS_SAMPLES;
+        double   lt = t_ring[newest];
+        unsigned long long lc = c_ring[newest];
+
+        /* Walk backwards to the oldest sample, stopping early once the window
+         * is both long enough and busy enough. */
+        unsigned chosen = (n_ring - have) % RM_FPS_SAMPLES;
+        for (unsigned k = 1; k < have; k++) {
+            unsigned i = (n_ring - 1 - k) % RM_FPS_SAMPLES;
+            chosen = i;
+            if ((lc - c_ring[i]) >= 3 && (lt - t_ring[i]) >= 1.0) break;
+        }
+        double dt = lt - t_ring[chosen];
+        unsigned long long dc = lc - c_ring[chosen];
+        double fps = dt > 0.0001 ? (double)dc / dt : 0.0;
+
+        if (last_shown >= 0 && fabs(fps - last_shown) < 0.05) return;   /* avoid needless title churn */
+        last_shown = fps;
+        [g_window setTitle:[NSString stringWithFormat:@"Madeira remote Metal  -  %.1f FPS  -  %llu frames",
+                            fps, (unsigned long long)lc]];
+    });
+    dispatch_resume(shower);
 }
 
 static void serve(int fd) {
@@ -1227,6 +1297,7 @@ static void serve(int fd) {
             {
                 static unsigned long frames, blank;
                 frames++;
+                atomic_fetch_add(&g_present_count, 1);
                 if (g_draws_since_present == 0) {
                     blank++;
                     if (blank <= 4 || (blank % 64) == 0)
@@ -1959,6 +2030,7 @@ int main(int argc, char **argv) {
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
         host_window_create(MTLCreateSystemDefaultDevice());
         [NSApp activateIgnoringOtherApps:YES];
+        rm_start_fps_title();   /* timers live on the main queue, so start here */
         pthread_t t;
         pthread_create(&t, NULL, rpc_thread, NULL);
         [NSApp run];
