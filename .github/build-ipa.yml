@@ -1,0 +1,79 @@
+name: Build Madeira IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout Madeira
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Show Xcode version
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks
+
+      - name: Install dependencies
+        run: |
+          brew install cmake ninja pkg-config autoconf automake libtool
+
+      - name: Make scripts executable
+        run: |
+          find . -name "*.sh" -exec chmod +x {} \;
+
+      - name: Show repository
+        run: |
+          echo "Repository contents:"
+          ls -la
+          echo
+          echo "Build scripts:"
+          find build -maxdepth 2 -type f -name "build.sh" -print
+
+      - name: Build
+        run: |
+          echo "Madeira native build goes here"
+
+      - name: Build iOS app
+        run: |
+          xcodebuild \
+            -project app/Madeira.xcodeproj \
+            -target Madeira \
+            -configuration Release \
+            -sdk iphoneos \
+            -arch arm64 \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Find Madeira.app
+        run: |
+          find . -name "Madeira.app" -type d -print
+
+      - name: Create IPA
+        run: |
+          mkdir -p Payload
+
+          APP=$(find . -type d -name "Madeira.app" | head -n 1)
+
+          if [ -z "$APP" ]; then
+            echo "Madeira.app was not found"
+            exit 1
+          fi
+
+          echo "Found: $APP"
+
+          cp -R "$APP" Payload/Madeira.app
+          zip -r Madeira.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Madeira-IPA
+          path: Madeira.ipa
