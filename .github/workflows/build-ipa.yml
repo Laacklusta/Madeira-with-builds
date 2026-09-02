@@ -14,6 +14,7 @@ jobs:
   build:
     name: Build Madeira IPA
     runs-on: macos-15
+    timeout-minutes: 120
 
     env:
       DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
@@ -27,7 +28,6 @@ jobs:
       LLVM_IOS_DIR: "toolchains/llvm-ios-build"
 
     steps:
-
       # ============================================================
       # CHECKOUT
       # ============================================================
@@ -38,13 +38,16 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      # ============================================================
+      # XCODE
+      # ============================================================
+
       - name: Initialize Xcode
         shell: bash
         run: |
           set -euxo pipefail
 
-          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-
+          sudo xcode-select -s "$DEVELOPER_DIR"
           sudo xcodebuild -license accept || true
           sudo xcodebuild -runFirstLaunch || true
 
@@ -60,87 +63,35 @@ jobs:
           xcodebuild -showsdks
 
       # ============================================================
-      # METAL TOOLCHAIN
+      # METAL
       # ============================================================
 
-      - name: Check Metal Toolchain
-        id: metal-check
-        shell: bash
-        run: |
-          set +e
-
-          echo "Checking for Apple's Metal compiler..."
-
-          METAL="$(xcrun --find metal 2>/dev/null)"
-          RESULT=$?
-
-          if [ "$RESULT" -eq 0 ] && [ -x "$METAL" ]; then
-            echo "Metal Toolchain already installed."
-            echo "Metal: $METAL"
-            "$METAL" --version || true
-
-            echo "installed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Metal Toolchain is not currently available."
-            echo "installed=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Install Metal Toolchain
-        if: steps.metal-check.outputs.installed != 'true'
+      - name: Verify Metal toolchain
         shell: bash
         run: |
           set -euxo pipefail
-
-          echo "Attempting Apple's official Metal Toolchain download..."
-
-          sudo xcodebuild -downloadComponent MetalToolchain
-
-      - name: Verify Metal Toolchain
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          echo "Locating Metal compiler..."
 
           METAL="$(xcrun --find metal)"
-
-          if [ ! -x "$METAL" ]; then
-            echo "::error::Metal compiler could not be found."
-            echo
-            echo "Xcode developer directory:"
-            xcode-select -p
-            echo
-            echo "Available Metal-related files:"
-            find /Applications/Xcode.app \
-              -iname '*Metal*' \
-              -maxdepth 8 \
-              2>/dev/null | head -200 || true
-            exit 1
-          fi
-
-          echo "Metal compiler:"
-          echo "$METAL"
-
-          "$METAL" --version || true
-
           METALLIB="$(xcrun --find metallib)"
 
-          echo
-          echo "metallib:"
-          echo "$METALLIB"
+          test -x "$METAL"
+          test -x "$METALLIB"
 
+          echo "metal: $METAL"
+          "$METAL" --version || true
+
+          echo
+          echo "metallib: $METALLIB"
           "$METALLIB" --version || true
 
       # ============================================================
-      # HOMEBREW DEPENDENCIES
+      # HOMEBREW
       # ============================================================
 
       - name: Install build dependencies
         shell: bash
         run: |
           set -euxo pipefail
-
-          brew update
 
           brew install \
             cmake \
@@ -156,7 +107,7 @@ jobs:
             flex
 
       # ============================================================
-      # REPOSITORY SETUP
+      # SUBMODULES
       # ============================================================
 
       - name: Update submodules
@@ -166,7 +117,6 @@ jobs:
 
           git submodule sync --recursive
           git submodule update --init --recursive
-
           git submodule status --recursive
 
       - name: Make scripts executable
@@ -179,99 +129,146 @@ jobs:
             -name '*.sh' \
             -exec chmod +x {} \;
 
-      - name: Show repository
+      # ============================================================
+      # VC RUNTIME
+      # ============================================================
+
+      - name: Prepare Visual C++ runtime
         shell: bash
         run: |
           set -euxo pipefail
 
-          echo "Repository:"
-          ls -la
+          DEST="$GITHUB_WORKSPACE/app/Madeira/x86_64-vcruntime"
+          mkdir -p "$DEST"
 
-          echo
-          echo "Build scripts:"
-          find build \
-            -type f \
-            -name 'build.sh' \
-            -print \
-            2>/dev/null | sort || true
+          echo "Checking existing VC runtime..."
 
-          echo
-          echo "Xcode project:"
-          find app \
-            -maxdepth 2 \
-            -name '*.xcodeproj' \
-            -print 2>/dev/null || true
-
-      # ============================================================
-      # MICROSOFT VC RUNTIME
-      # ============================================================
-
-      - name: Check Visual C++ runtime
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          DEST="app/Madeira/x86_64-vcruntime"
-
-          if [ -d "$DEST" ]; then
-            echo "Visual C++ runtime directory exists."
-
-            count="$(find "$DEST" -maxdepth 1 -type f -iname '*.dll' | wc -l | tr -d ' ')"
-
-            echo "DLL count: $count"
-
-            if [ "$count" -ge 12 ]; then
-              echo "VC runtime appears to be populated."
-              exit 0
-            fi
-          fi
-
-          if [ -f tools/VC_redist.x64.exe ]; then
-            echo "Found tools/VC_redist.x64.exe."
-
-            rm -rf /tmp/vcredist
-            mkdir -p /tmp/vcredist "$DEST"
-
-            7zz x \
-              tools/VC_redist.x64.exe \
-              -o/tmp/vcredist
-
-            CAB="$(find /tmp/vcredist \
-              -type f \
-              -iname '*.cab' \
-              | head -n 1)"
-
-            if [ -z "$CAB" ]; then
-              echo "::error::VC runtime CAB was not found."
-              exit 1
-            fi
-
-            7zz x \
-              "$CAB" \
-              -o"$DEST"
-
-            echo "VC runtime files:"
+          EXISTING_COUNT="$(
             find "$DEST" \
               -maxdepth 1 \
               -type f \
               -iname '*.dll' \
-              -print
+              | wc -l \
+              | tr -d ' '
+          )"
 
+          echo "Existing DLL count: $EXISTING_COUNT"
+
+          if [ "$EXISTING_COUNT" -ge 12 ]; then
+            echo "VC runtime already populated."
             exit 0
           fi
 
-          echo "::error::Visual C++ runtime is missing."
-          echo
-          echo "Madeira requires Microsoft's VC runtime DLLs."
-          echo "Supply them using the repository's documented method."
-          echo
-          echo "Expected directory:"
-          echo "  $DEST"
-          echo
-          echo "Or provide:"
-          echo "  tools/VC_redist.x64.exe"
+          # The repository may provide the redistributable installer.
+          INSTALLER="tools/VC_redist.x64.exe"
 
-          exit 1
+          if [ ! -f "$INSTALLER" ]; then
+            echo "::error::VC_redist.x64.exe is missing."
+            echo
+            echo "Expected:"
+            echo "  $INSTALLER"
+            echo
+            echo "Or populate:"
+            echo "  $DEST"
+            exit 1
+          fi
+
+          echo "Found VC redistributable:"
+          ls -lh "$INSTALLER"
+
+          TMP="$RUNNER_TEMP/vcredist"
+          rm -rf "$TMP"
+          mkdir -p "$TMP"
+
+          echo
+          echo "Extracting redistributable..."
+
+          7zz x \
+            "$INSTALLER" \
+            "-o$TMP" \
+            -y
+
+          echo
+          echo "Extracted files:"
+          find "$TMP" \
+            -type f \
+            -maxdepth 8 \
+            -print \
+            | sort \
+            | head -300
+
+          # IMPORTANT:
+          # Search recursively. The previous workflow only searched
+          # for a CAB in one directory and therefore failed when the
+          # redistributable placed it deeper in the extraction tree.
+
+          CAB="$(
+            find "$TMP" \
+              -type f \
+              -iname '*.cab' \
+              -print \
+              | head -n 1
+          )"
+
+          if [ -z "$CAB" ]; then
+            echo "::error::VC runtime CAB was not found after extraction."
+            echo
+            echo "Complete extraction tree:"
+            find "$TMP" -type f -print | sort
+            exit 1
+          fi
+
+          echo
+          echo "Using CAB:"
+          echo "$CAB"
+
+          CAB_DIR="$RUNNER_TEMP/vcredist-cab"
+          rm -rf "$CAB_DIR"
+          mkdir -p "$CAB_DIR"
+
+          7zz x \
+            "$CAB" \
+            "-o$CAB_DIR" \
+            -y
+
+          echo
+          echo "Searching extracted CAB for runtime DLLs..."
+
+          # Copy DLLs recursively instead of assuming a particular
+          # internal Microsoft redistributable directory structure.
+
+          find "$CAB_DIR" \
+            -type f \
+            -iname '*.dll' \
+            -exec cp -f {} "$DEST/" \;
+
+          echo
+          echo "VC runtime DLLs:"
+          find "$DEST" \
+            -maxdepth 1 \
+            -type f \
+            -iname '*.dll' \
+            -print \
+            | sort
+
+          COUNT="$(
+            find "$DEST" \
+              -maxdepth 1 \
+              -type f \
+              -iname '*.dll' \
+              | wc -l \
+              | tr -d ' '
+          )"
+
+          echo
+          echo "Final DLL count: $COUNT"
+
+          if [ "$COUNT" -lt 12 ]; then
+            echo "::error::VC runtime extraction produced only $COUNT DLLs."
+            exit 1
+          fi
+
+          echo "VC runtime preparation successful."
 
       # ============================================================
       # LLVM-MINGW
@@ -284,7 +281,7 @@ jobs:
 
           mkdir -p toolchains
 
-          ARCHIVE="/tmp/llvm-mingw.tar.xz"
+          ARCHIVE="$RUNNER_TEMP/llvm-mingw.tar.xz"
 
           curl \
             --fail \
@@ -320,13 +317,13 @@ jobs:
 
           mkdir -p toolchains
 
-          if [ ! -d "$LLVM_SRC_DIR/.git" ]; then
-            git clone \
-              --depth 1 \
-              --branch "llvmorg-${LLVM_VERSION}" \
-              https://github.com/llvm/llvm-project.git \
-              "$LLVM_SRC_DIR"
-          fi
+          rm -rf "$LLVM_SRC_DIR"
+
+          git clone \
+            --depth 1 \
+            --branch "llvmorg-${LLVM_VERSION}" \
+            https://github.com/llvm/llvm-project.git \
+            "$LLVM_SRC_DIR"
 
           cd "$LLVM_SRC_DIR"
 
@@ -345,8 +342,6 @@ jobs:
           set -euxo pipefail
 
           FILE="$LLVM_SRC_DIR/llvm/cmake/modules/AddLLVM.cmake"
-
-          echo "Checking LLVM patch..."
 
           if grep -q 'Darwin|iOS' "$FILE"; then
             echo "LLVM iOS patch already present."
@@ -372,6 +367,10 @@ jobs:
           PY
 
           grep -n 'Darwin|iOS' "$FILE"
+
+      # ============================================================
+      # HOST LLVM TABLEGEN
+      # ============================================================
 
       - name: Build host llvm-tblgen
         shell: bash
@@ -400,6 +399,10 @@ jobs:
 
           test -x \
             "$LLVM_HOST_DIR/bin/llvm-tblgen"
+
+      # ============================================================
+      # LLVM IOS
+      # ============================================================
 
       - name: Build LLVM for iOS
         shell: bash
@@ -444,20 +447,8 @@ jobs:
           test -d "$LLVM_IOS_DIR/lib"
 
       # ============================================================
-      # BUILD REPOSITORY NATIVE COMPONENTS
+      # MADEIRA NATIVE COMPONENTS
       # ============================================================
-
-      - name: List Madeira build scripts
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          find build \
-            -type f \
-            -name build.sh \
-            -print \
-            2>/dev/null \
-            | sort
 
       - name: Build Madeira native components
         shell: bash
@@ -478,7 +469,6 @@ jobs:
               -name build.sh \
               ! -path 'build/dxmt-ios/build.sh' \
               -print \
-              2>/dev/null \
               | sort
           )
 
@@ -513,7 +503,6 @@ jobs:
           export PATH="$GITHUB_WORKSPACE/$LLVM_MINGW_DIR/bin:$PATH"
 
           SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
-
           export SDKROOT
 
           rm -rf build-pe
@@ -560,7 +549,7 @@ jobs:
             "$GITHUB_WORKSPACE/app/Madeira/libdxmt_combined.a"
 
       # ============================================================
-      # SHOW BUILD INPUTS
+      # VERIFY NATIVE OUTPUT
       # ============================================================
 
       - name: Verify native outputs
@@ -585,13 +574,17 @@ jobs:
           find app/Madeira \
             -maxdepth 2 \
             -type f \
-            \( -name '*.a' -o -name '*.dylib' -o -name '*.dll' \) \
+            \( \
+              -name '*.a' \
+              -o -name '*.dylib' \
+              -o -name '*.dll' \
+            \) \
             -print \
             2>/dev/null \
-            | sort || true
+            | sort
 
       # ============================================================
-      # BUILD XCODE APP
+      # XCODE BUILD
       # ============================================================
 
       - name: Build Madeira.app
@@ -719,7 +712,7 @@ jobs:
         run: |
           set -euxo pipefail
 
-          unzip -l Madeira.ipa
+          unzip -t Madeira.ipa
 
           unzip -l Madeira.ipa \
             | grep -q 'Payload/Madeira.app/Madeira$'
@@ -740,7 +733,7 @@ jobs:
           retention-days: 14
 
       # ============================================================
-      # UPLOAD DIAGNOSTICS IF BUILD FAILS
+      # DIAGNOSTICS
       # ============================================================
 
       - name: Upload build diagnostics
